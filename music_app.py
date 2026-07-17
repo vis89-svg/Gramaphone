@@ -101,11 +101,11 @@ class App:
 
         ctrl = ttk.Frame(bot)
         ctrl.pack(fill=tk.X, pady=(3, 0))
-        self.prv = ttk.Button(ctrl, text="|<", width=3, command=self._prev)
+        self.prv = ttk.Button(ctrl, text="|<", width=3, command=self._prev, state=tk.DISABLED)
         self.prv.pack(side=tk.LEFT, padx=(0, 2))
         self.pp = ttk.Button(ctrl, text=">", width=3, command=self._toggle, state=tk.DISABLED)
         self.pp.pack(side=tk.LEFT, padx=2)
-        self.nxt = ttk.Button(ctrl, text=">|", width=3, command=self._next)
+        self.nxt = ttk.Button(ctrl, text=">|", width=3, command=self._next, state=tk.DISABLED)
         self.nxt.pack(side=tk.LEFT, padx=2)
         self.ss = ttk.Button(ctrl, text="[]", width=3, command=self._stop, state=tk.DISABLED)
         self.ss.pack(side=tk.LEFT, padx=(2, 10))
@@ -264,6 +264,7 @@ class App:
         self.qidx = len(self.queue) - 1
         self.q.selection_clear(0, tk.END)
         self.q.selection_set(self.qidx)
+        self._update_nav()
         self._play_q()
 
     def _play_q(self):
@@ -288,6 +289,15 @@ class App:
         except Exception as e:
             self.root.after(0, self._err, str(e))
 
+    def _update_nav(self):
+        has = len(self.queue) > 0 and self.qidx >= 0 and self.qidx < len(self.queue)
+        if has:
+            self.prv.config(state=tk.NORMAL if self.qidx > 0 else tk.DISABLED)
+            self.nxt.config(state=tk.NORMAL if self.qidx < len(self.queue) - 1 else tk.DISABLED)
+        else:
+            self.prv.config(state=tk.DISABLED)
+            self.nxt.config(state=tk.DISABLED)
+
     def _play_vlc(self, url, item):
         try:
             player.stop()
@@ -296,6 +306,7 @@ class App:
             self.paused = False
             self.pp.config(text="||", state=tk.NORMAL)
             self.ss.config(state=tk.NORMAL)
+            self._update_nav()
             self.st.config(text=f"Playing: {item.artist} - {item.title}")
             self.q.selection_clear(0, tk.END)
             self.q.selection_set(self.qidx)
@@ -320,6 +331,7 @@ class App:
         self.paused = False
         self.pp.config(text=">", state=tk.DISABLED)
         self.ss.config(state=tk.DISABLED)
+        self._update_nav()
         self.sk.set(0)
         self.tl.config(text="0:00 / 0:00")
 
@@ -359,12 +371,14 @@ class App:
         elif i <= self.qidx:
             self.qidx = max(0, self.qidx - 1)
             self.q.selection_set(self.qidx)
+        self._update_nav()
 
     def _clr_q(self):
         self.queue.clear()
         self.q.delete(0, tk.END)
         self.qidx = -1
         self._stop()
+        self._update_nav()
 
     def _seek_done(self, event):
         self.seeking = False
