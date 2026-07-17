@@ -1,12 +1,15 @@
 import tkinter as tk
-from tkinter import ttk, messagebox
-import subprocess, sys, threading, json, vlc, requests, time
+from tkinter import ttk, messagebox, filedialog
+import subprocess, sys, threading, json, vlc, requests, time, os, io
+from PIL import Image, ImageTk
+import urllib.request
 
 YT = [sys.executable, "-m", "yt_dlp", "--remote-components", "ejs:github"]
 ITUNES = "https://itunes.apple.com"
 player = vlc.MediaPlayer()
 player.audio_set_volume(80)
 track_data = {}
+album_art_cache = {}
 
 
 def yt_find(query):
@@ -35,18 +38,34 @@ class App:
     def __init__(self):
         self.root = tk.Tk()
         self.root.title("tmp3 - music player")
-        self.root.geometry("950x650")
-        self.root.minsize(700, 500)
+        self.root.geometry("1000x680")
+        self.root.minsize(750, 520)
 
         self.queue = []
         self.qidx = -1
         self.paused = False
         self.seeking = False
+        self.repeat = 0
+        self.shuffle = False
+        self.shuffled_indices = []
+        self.shuffle_pos = 0
 
         self._ui()
         self._bind()
         self._tick()
         self.root.protocol("WM_DELETE_WINDOW", self._close)
+
+    def _fetch_art(self, url):
+        if url in album_art_cache:
+            return album_art_cache[url]
+        try:
+            data = urllib.request.urlopen(url, timeout=5).read()
+            img = Image.open(io.BytesIO(data)).resize((120, 120), Image.LANCZOS)
+            photo = ImageTk.PhotoImage(img)
+            album_art_cache[url] = photo
+            return photo
+        except:
+            return None
 
     def _ui(self):
         top = ttk.Frame(self.root, padding=(10, 10, 10, 0))
@@ -69,7 +88,7 @@ class App:
         self.t.heading("b", text="Type")
         self.t.heading("c", text="Details")
         self.t.column("#0", width=30, stretch=False)
-        self.t.column("a", width=300)
+        self.t.column("a", width=280)
         self.t.column("b", width=70)
         self.t.column("c", width=200)
         sb = ttk.Scrollbar(f0, orient=tk.VERTICAL, command=self.t.yview)
@@ -89,15 +108,25 @@ class App:
         sb2.pack(side=tk.RIGHT, fill=tk.Y)
         qbf = ttk.Frame(f1)
         qbf.pack(fill=tk.X, pady=(4, 0))
-        ttk.Button(qbf, text="Play", command=self._jump_q, width=6).pack(side=tk.LEFT)
-        ttk.Button(qbf, text="Remove", command=self._rm_q, width=8).pack(side=tk.LEFT, padx=(5, 0))
-        ttk.Button(qbf, text="Clear", command=self._clr_q, width=6).pack(side=tk.LEFT, padx=(5, 0))
+        ttk.Button(qbf, text="Play", command=self._jump_q, width=5).pack(side=tk.LEFT)
+        ttk.Button(qbf, text="Remove", command=self._rm_q, width=7).pack(side=tk.LEFT, padx=(5, 0))
+        ttk.Button(qbf, text="Clear", command=self._clr_q, width=5).pack(side=tk.LEFT, padx=(5, 0))
+        self.shuf_btn = ttk.Button(qbf, text="Shuffle", width=7, command=self._toggle_shuffle)
+        self.shuf_btn.pack(side=tk.RIGHT, padx=(5, 0))
+        self.rep_btn = ttk.Button(qbf, text="Repeat", width=7, command=self._toggle_repeat)
+        self.rep_btn.pack(side=tk.RIGHT)
 
         bot = ttk.Frame(self.root, padding=(10, 5, 10, 10))
         bot.pack(fill=tk.X)
 
-        self.st = ttk.Label(bot, text="No track loaded")
-        self.st.pack(anchor=tk.W)
+        npf = ttk.Frame(bot)
+        npf.pack(fill=tk.X)
+        self.art_lbl = ttk.Label(npf, text="")
+        self.art_lbl.pack(side=tk.LEFT, padx=(0, 10))
+        self.st = ttk.Label(npf, text="No track loaded", font=("Segoe UI", 10))
+        self.st.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self.dl_btn = ttk.Button(npf, text="Download", command=self._download, state=tk.DISABLED)
+        self.dl_btn.pack(side=tk.RIGHT)
 
         ctrl = ttk.Frame(bot)
         ctrl.pack(fill=tk.X, pady=(3, 0))
@@ -130,6 +159,26 @@ class App:
         em = player.event_manager()
         em.event_attach(vlc.EventType.MediaPlayerEndReached, lambda e: self.root.after(0, self._auto_nxt))
 
+    def _toggle_repeat(self):
+        self.repeat = (self.repeat + 1) % 3
+        labels = {0: "Repeat", 1: "Repeat All", 2: "Repeat One"}
+        self.rep_btn.config(text=labels[self.repeat])
+
+    def _toggle_shuffle(self):
+        self.shuffle = not self.shuffle
+        self.shuf_btn.config(text="Shuffle ON" if self.shuffle else "Shuffle", relief=tk.SUNKEN if self.shuffle else tk.RAISED)
+        if self.shuffle and len(self.queue) > 0:
+            self._rebuild_shuffle()
+
+    def _rebuild_shuffle(self):
+        indices = list(range(len(self.queue)))
+        if self.qidx in indices:
+            indices.remove(self.qidx)
+        import random
+        random.shuffle(indices)
+        self.shuffled_indices = [self.qidx] + indices
+        self.shuffle_pos = 0
+
     def _go(self):
         q = self.e.get().strip()
         if not q:
@@ -149,7 +198,7 @@ class App:
                 aid = f"a_{x['artistId']}"
                 if aid not in seen:
                     seen.add(aid)
-                    rows.append(("", aid, "", (x["artistName"], "Artist", ""), ("artist", x["artistId"])))
+                    rows.append(("", aid, "", (x["artistName"], "Artist", ""), ("artist", str(x["artistId"]))))
         except:
             pass
         try:
@@ -159,7 +208,7 @@ class App:
                 if alid not in seen:
                     seen.add(alid)
                     p = f"a_{x['artistId']}" if f"a_{x['artistId']}" in seen else ""
-                    rows.append((p, alid, "", (x["collectionName"], "Album", x.get("artistName","")), ("album", x["collectionId"])))
+                    rows.append((p, alid, "", (x["collectionName"], "Album", x.get("artistName","")), ("album", str(x["collectionId"]))))
         except:
             pass
         try:
@@ -171,7 +220,8 @@ class App:
                     dur = x.get("trackTimeMillis", 0) // 1000
                     m, s = divmod(dur, 60)
                     p = f"al_{x['collectionId']}" if f"al_{x['collectionId']}" in seen else ""
-                    track_data[tid] = (x["trackName"], x["artistName"], str(x.get("collectionId","")))
+                    art = x.get("artworkUrl100", "")
+                    track_data[tid] = (x["trackName"], x["artistName"], str(x.get("collectionId","")), art)
                     rows.append((p, tid, "", (x["trackName"], "Track", f"{x['artistName']} \u00b7 {m}:{s:02d}"), ("track", tid)))
         except:
             pass
@@ -202,7 +252,7 @@ class App:
         elif typ == "track":
             info = track_data.get(rid)
             if info:
-                self._enqueue(info[0], info[1], info[2])
+                self._enqueue(info[0], info[1], info[2], info[3] if len(info) > 3 else "")
 
     def _load_artist(self, aid):
         try:
@@ -224,7 +274,7 @@ class App:
             try:
                 self.t.insert(pid, tk.END, iid=alid, text="",
                               values=(x["collectionName"], "Album", f"{x.get('trackCount',0)} tracks"),
-                              tags=("album", x["collectionId"]))
+                              tags=("album", str(x["collectionId"])))
             except:
                 pass
         self.t.item(pid, open=True)
@@ -248,7 +298,8 @@ class App:
             tid = f"t_{x['trackId']}"
             dur = x.get("trackTimeMillis", 0) // 1000
             m, s = divmod(dur, 60)
-            track_data[tid] = (x["trackName"], x["artistName"], str(x.get("collectionId","")))
+            art = x.get("artworkUrl100", "")
+            track_data[tid] = (x["trackName"], x["artistName"], str(x.get("collectionId","")), art)
             try:
                 self.t.insert(pid, tk.END, iid=tid, text="",
                               values=(x["trackName"], "Track", f"{m}:{s:02d}"),
@@ -257,14 +308,16 @@ class App:
                 pass
         self.t.item(pid, open=True)
 
-    def _enqueue(self, title, artist, album):
-        item = type("Item", (), {"title": title, "artist": artist, "album": album, "query": f"{artist} {title}"})()
+    def _enqueue(self, title, artist, album, art_url):
+        item = type("Item", (), {"title": title, "artist": artist, "album": album, "query": f"{artist} {title}", "art_url": art_url})()
         self.queue.append(item)
         self.q.insert(tk.END, f"{artist} - {title}")
         self.qidx = len(self.queue) - 1
         self.q.selection_clear(0, tk.END)
         self.q.selection_set(self.qidx)
         self._update_nav()
+        if self.shuffle:
+            self._rebuild_shuffle()
         self._play_q()
 
     def _play_q(self):
@@ -272,6 +325,11 @@ class App:
             return
         item = self.queue[self.qidx]
         self.st.config(text=f"Loading: {item.artist} - {item.title}...")
+        if item.art_url:
+            photo = self._fetch_art(item.art_url)
+            if photo:
+                self.art_lbl.config(image=photo)
+                self.art_lbl.image = photo
         self._stop()
         threading.Thread(target=self._play_thr, args=(item,), daemon=True).start()
 
@@ -294,9 +352,11 @@ class App:
         if has:
             self.prv.config(state=tk.NORMAL if self.qidx > 0 else tk.DISABLED)
             self.nxt.config(state=tk.NORMAL if self.qidx < len(self.queue) - 1 else tk.DISABLED)
+            self.dl_btn.config(state=tk.NORMAL)
         else:
             self.prv.config(state=tk.DISABLED)
             self.nxt.config(state=tk.DISABLED)
+            self.dl_btn.config(state=tk.DISABLED)
 
     def _play_vlc(self, url, item):
         try:
@@ -319,7 +379,6 @@ class App:
             player.play()
             self.paused = False
             self.pp.config(text="||")
-            self.st.config(text="Playing")
         else:
             player.pause()
             self.paused = True
@@ -335,19 +394,44 @@ class App:
         self.sk.set(0)
         self.tl.config(text="0:00 / 0:00")
 
+    def _pick_next(self):
+        if self.repeat == 2:
+            return self.qidx
+        if self.shuffle and self.shuffled_indices:
+            self.shuffle_pos += 1
+            if self.shuffle_pos < len(self.shuffled_indices):
+                return self.shuffled_indices[self.shuffle_pos]
+            elif self.repeat == 1:
+                self._rebuild_shuffle()
+                self.shuffle_pos = 0
+                return self.shuffled_indices[0] if self.shuffled_indices else -1
+            else:
+                return -1
+        nxt = self.qidx + 1
+        if nxt < len(self.queue):
+            return nxt
+        elif self.repeat == 1:
+            return 0
+        else:
+            return -1
+
     def _prev(self):
         if self.qidx > 0:
             self.qidx -= 1
             self._play_q()
 
     def _next(self):
-        if self.qidx < len(self.queue) - 1:
-            self.qidx += 1
+        nxt = self._pick_next()
+        if nxt >= 0:
+            self.qidx = nxt
             self._play_q()
+        else:
+            self._stop()
 
     def _auto_nxt(self):
-        if self.qidx < len(self.queue) - 1:
-            self.qidx += 1
+        nxt = self._pick_next()
+        if nxt >= 0:
+            self.qidx = nxt
             self._play_q()
         else:
             self._stop()
@@ -379,6 +463,40 @@ class App:
         self.qidx = -1
         self._stop()
         self._update_nav()
+        self.art_lbl.config(image="")
+        self.art_lbl.image = None
+
+    def _download(self):
+        if self.qidx < 0 or self.qidx >= len(self.queue):
+            return
+        item = self.queue[self.qidx]
+        vid = yt_find(item.query)
+        if not vid:
+            messagebox.showerror("Error", "Could not find YouTube video for this track.")
+            return
+        default_name = f"{item.artist} - {item.title}"[:200]
+        path = filedialog.asksaveasfilename(
+            defaultextension=".mp3",
+            initialfile=default_name,
+            filetypes=[("MP3 files", "*.mp3"), ("All files", "*.*")]
+        )
+        if not path:
+            return
+        self.st.config(text=f"Downloading: {item.title}...")
+        self.root.update()
+        threading.Thread(target=self._dl_thread, args=(vid, path, item), daemon=True).start()
+
+    def _dl_thread(self, vid, path, item):
+        try:
+            r = subprocess.run(YT + [f"https://youtube.com/watch?v={vid}", "-x", "--audio-format", "mp3", "-o", path, "-q"],
+                               capture_output=True, text=True, timeout=120)
+            if r.returncode == 0:
+                self.root.after(0, lambda: self.st.config(text=f"Downloaded: {item.artist} - {item.title}"))
+                self.root.after(0, lambda: messagebox.showinfo("Done", f"Saved:\n{path}"))
+            else:
+                self.root.after(0, lambda: self._err(f"Download failed:\n{r.stderr[:200]}"))
+        except subprocess.TimeoutExpired:
+            self.root.after(0, lambda: self._err("Download timed out."))
 
     def _seek_done(self, event):
         self.seeking = False
