@@ -11,7 +11,8 @@ ctk.set_default_color_theme("green")
 YT = [sys.executable, "-m", "yt_dlp", "--remote-components", "ejs:github"]
 ITUNES = "https://itunes.apple.com"
 
-player = vlc.MediaPlayer()
+vlc_instance = vlc.Instance("--aout=directsound", "--quiet")
+player = vlc_instance.media_player_new()
 player.audio_set_volume(80)
 track_data = {}
 art_cache = {}
@@ -434,9 +435,68 @@ class App:
                 pass
         self.result_tree.item(pid, open=True)
 
+    def yt_search(self, query, max_results=6):
+        r = subprocess.run(YT + [f"ytsearch{max_results}:{query}", "--flat-playlist", "--dump-json"],
+                           capture_output=True, text=True, timeout=30)
+        if r.returncode != 0:
+            return []
+        out = []
+        for line in r.stdout.strip().splitlines():
+            if line.strip():
+                try:
+                    d = json.loads(line)
+                    out.append({"id": d["id"], "title": d.get("title", "?"),
+                                "channel": d.get("channel", d.get("uploader", "?")),
+                                "duration": d.get("duration", 0)})
+                except:
+                    continue
+        return out
+
+    def _pick_source(self, item, results, callback):
+        if not results:
+            self.root.after(0, lambda: self._err("No YouTube results found."))
+            return
+
+        win = ctk.CTkToplevel(self.root)
+        win.title("Select Source")
+        win.geometry("600x400")
+        win.transient(self.root)
+        win.grab_set()
+
+        ctk.CTkLabel(win, text=f"Select YouTube source for:", font=("Segoe UI", 12)).pack(pady=(10, 2))
+        ctk.CTkLabel(win, text=f"{item.artist} - {item.title}", font=("Segoe UI", 14, "bold")).pack(pady=(0, 10))
+
+        frame = ctk.CTkScrollableFrame(win, height=250)
+        frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
+
+        buttons = []
+        for i, res in enumerate(results):
+            dur = res.get("duration", 0)
+            m, s = divmod(dur, 60)
+            dur_str = f"{m}:{s:02d}" if dur else "?:??"
+            card = ctk.CTkFrame(frame)
+            card.pack(fill=tk.X, pady=3)
+            info = f"{res['title']}  |  {res['channel']}  |  {dur_str}"
+            btn = ctk.CTkButton(card, text=info, anchor="w", height=32,
+                                fg_color="#333333", hover_color="#1DB954",
+                                font=("Segoe UI", 11))
+            btn.pack(fill=tk.X)
+            buttons.append((btn, res["id"]))
+
+        def select(idx):
+            item.video_id = buttons[idx][1]
+            win.destroy()
+            callback(item)
+
+        for i, (btn, _) in enumerate(buttons):
+            btn.configure(command=lambda i=i: select(i))
+
+        ctk.CTkButton(win, text="Cancel", command=win.destroy).pack(pady=(0, 10))
+
     def _enqueue(self, title, artist, album, art_url):
         item = type("Item", (), {"title": title, "artist": artist, "album": album,
-                                 "query": f"{artist} {title}", "art_url": art_url})()
+                                 "query": f"{artist} {title}", "art_url": art_url,
+                                 "video_id": None})()
         self.queue.append(item)
         self.queue_lb.insert(tk.END, f"{artist} - {title}")
         self.qidx = len(self.queue) - 1
@@ -464,17 +524,24 @@ class App:
 
     def _play_thr(self, item):
         try:
-            vid = yt_find(item.query)
-            if not vid:
-                self.root.after(0, self._err, f"No YouTube match for {item.title}")
+            if not item.video_id:
+                results = self.yt_search(item.query)
+                self.root.after(0, lambda: self._pick_source(item, results, self._continue_play))
                 return
-            url = yt_stream(vid)
-            if not url:
-                self.root.after(0, self._err, f"Stream error for {item.title}")
-                return
-            self.root.after(0, self._play_vlc, url)
+            self._continue_play(item)
         except Exception as e:
             self.root.after(0, self._err, str(e))
+
+    def _continue_play(self, item):
+        vid = item.video_id or yt_find(item.query)
+        if not vid:
+            self.root.after(0, self._err, f"No YouTube match for {item.title}")
+            return
+        url = yt_stream(vid)
+        if not url:
+            self.root.after(0, self._err, f"Stream error for {item.title}")
+            return
+        self.root.after(0, self._play_vlc, url)
 
     def _update_nav(self):
         has = self.queue and self.qidx >= 0 and self.qidx < len(self.queue)
@@ -492,6 +559,7 @@ class App:
             player.stop()
             player.set_media(vlc.Media(url))
             player.play()
+            player.audio_set_volume(int(self.vol.get()))
             self.paused = False
             self.pp.configure(text="\u23f8", state=tk.NORMAL)
             self._update_nav()
@@ -630,8 +698,20 @@ class App:
         default = f"{item.artist} - {item.title}{ext}"[:200]
         self.root.after(0, lambda: self._dl_save(found, default, item))
 
+    def _sanitize(self, name):
+        for ch in ['/', '\\', ':', '*', '?', '"', '<', '>', '|', '\n', '\r']:
+            name = name.replace(ch, '_')
+        return name.strip('. ') or "track"
+
     def _dl_save(self, src, default_name, item):
-        path = filedialog.asksaveasfilename(initialfile=default_name, filetypes=[("All files", "*.*")])
+        default_name = self._sanitize(default_name)
+        initial_dir = os.path.join(os.path.expanduser("~"), "Downloads")
+        if not os.path.exists(initial_dir):
+            initial_dir = os.path.expanduser("~")
+        path = filedialog.asksaveasfilename(parent=self.root, initialdir=initial_dir,
+                                              initialfile=default_name,
+                                              defaultextension="",
+                                              filetypes=[("All files", "*.*")])
         if not path:
             try:
                 if os.path.exists(src):
@@ -641,11 +721,14 @@ class App:
             return
         self.st.configure(text=f"Saving: {item.title}...")
         try:
+            if not os.path.exists(src):
+                self._err("Temp file missing before copy. Try downloading again.")
+                return
             import shutil
             shutil.copy2(src, path)
             os.remove(src)
             self.st.configure(text=f"Downloaded: {item.artist} - {item.title}")
-            messagebox.showinfo("Done", f"Saved:\n{path}")
+            messagebox.showinfo("Done", f"Saved to:\n{path}")
         except Exception as e:
             self._err(f"Save failed: {e}")
 
