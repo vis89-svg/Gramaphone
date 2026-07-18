@@ -133,7 +133,7 @@ class App:
 
         self.filter_frame = ctk.CTkFrame(main, fg_color="transparent")
         self.filter_frame.grid(row=1, column=0, sticky="ew", padx=20, pady=(0, 5))
-        self.filter_frame.grid_columnconfigure(3, weight=1)
+        self.filter_frame.grid_columnconfigure(4, weight=1)
 
         self._active_filter = "All"
         self._filter_btns = {}
@@ -144,7 +144,7 @@ class App:
                                  fg_color="#2a7a5a" if label == "All" else "#333333",
                                  hover_color="#3a9a7a",
                                  command=lambda l=label: self._set_filter(l))
-            btn.grid(row=0, column=i, padx=(0, 5))
+            btn.grid(row=0, column=i, padx=(0, 5), sticky="w")
             self._filter_btns[label] = btn
 
         content = ctk.CTkFrame(main, fg_color="transparent")
@@ -422,32 +422,17 @@ class App:
         track_data.clear()
         entity_map = {"Songs": "song", "Artists": "musicArtist", "Albums": "album"}
         entity = entity_map.get(filt, "song")
-        limit_map = {"Songs": 30, "Artists": 10, "Albums": 15}
-        lim = limit_map.get(filt, 30)
+        limit_map = {"Songs": 200, "Artists": 10, "Albums": 200}
+        lim = limit_map.get(filt, 200)
         try:
-            r = requests.get(f"{ITUNES}/search", params={"term": q, "entity": entity, "limit": lim}, timeout=10)
+            r = requests.get(f"{ITUNES}/search", params={"term": q, "entity": entity, "limit": lim}, timeout=15)
             if entity == "musicArtist":
+                # just pure artist nodes, no songs
                 for x in r.json().get("results", []):
                     aid = f"a_{x['artistId']}"
                     if aid not in seen:
                         seen.add(aid)
-                        aname = x["artistName"]
-                        aid_raw = str(x["artistId"])
-                        rows.append(("", aid, "", (aname, "Artist", ""), ("artist", aid_raw)))
-                        try:
-                            rs = requests.get(f"{ITUNES}/search", params={"term": aname, "entity": "song", "limit": 20}, timeout=10)
-                            for s in rs.json().get("results", []):
-                                if str(s.get("artistId")) == aid_raw:
-                                    tid = f"t_{s['trackId']}"
-                                    if tid not in seen:
-                                        seen.add(tid)
-                                        dur = s.get("trackTimeMillis", 0) // 1000
-                                        m, sec = divmod(dur, 60)
-                                        art = s.get("artworkUrl100", "")
-                                        track_data[tid] = (s["trackName"], s["artistName"], str(s.get("collectionId","")), art)
-                                        rows.append((aid, tid, "", (s["trackName"], "Track", f"{m}:{sec:02d}"), ("track", tid)))
-                        except:
-                            pass
+                        rows.append(("", aid, "", (x["artistName"], "Artist", ""), ("artist", str(x["artistId"]))))
             elif entity == "song":
                 for x in r.json().get("results", []):
                     tid = f"t_{x['trackId']}"
@@ -458,7 +443,7 @@ class App:
                         art = x.get("artworkUrl100", "")
                         track_data[tid] = (x["trackName"], x["artistName"], str(x.get("collectionId","")), art)
                         rows.append(("", tid, "", (x["trackName"], f"{x['artistName']}", f"{m}:{s:02d}"), ("track", tid)))
-            else:  # album
+            else:  # album — all albums by this artist
                 for x in r.json().get("results", []):
                     alid = f"al_{x['collectionId']}"
                     if alid not in seen:
