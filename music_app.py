@@ -399,7 +399,7 @@ class App:
                 pass
         for iid in self.result_tree.get_children():
             tags = self.result_tree.item(iid, "tags")
-            if tags and tags[0] in ("artist", "album"):
+            if tags and tags[0] in ("artist", "album", "label"):
                 self.result_tree.item(iid, open=True)
 
     def _set_filter(self, label):
@@ -427,28 +427,69 @@ class App:
         try:
             r = requests.get(f"{ITUNES}/search", params={"term": q, "entity": entity, "limit": lim}, timeout=15)
             if entity == "musicArtist":
-                # just pure artist nodes, no songs
                 for x in r.json().get("results", []):
                     aid = f"a_{x['artistId']}"
                     if aid not in seen:
                         seen.add(aid)
                         rows.append(("", aid, "", (x["artistName"], "Artist", ""), ("artist", str(x["artistId"]))))
             elif entity == "song":
+                originals, collabs, remixes = [], [], []
+                ql = q.lower()
                 for x in r.json().get("results", []):
                     tid = f"t_{x['trackId']}"
-                    if tid not in seen:
-                        seen.add(tid)
-                        dur = x.get("trackTimeMillis", 0) // 1000
-                        m, s = divmod(dur, 60)
-                        art = x.get("artworkUrl100", "")
-                        track_data[tid] = (x["trackName"], x["artistName"], str(x.get("collectionId","")), art)
-                        rows.append(("", tid, "", (x["trackName"], f"{x['artistName']}", f"{m}:{s:02d}"), ("track", tid)))
-            else:  # album — all albums by this artist
+                    if tid in seen:
+                        continue
+                    seen.add(tid)
+                    dur = x.get("trackTimeMillis", 0) // 1000
+                    m, s_div = divmod(dur, 60)
+                    art = x.get("artworkUrl100", "")
+                    track_data[tid] = (x["trackName"], x["artistName"], str(x.get("collectionId","")), art)
+                    entry = (tid, x["trackName"], x["artistName"], f"{m}:{s_div:02d}")
+                    title_lower = x["trackName"].lower()
+                    if "remix" in title_lower:
+                        remixes.append(entry)
+                    elif x["artistName"].lower() != ql:
+                        collabs.append(entry)
+                    else:
+                        originals.append(entry)
+                # Section: Original Songs
+                if originals:
+                    rows.append(("", "_sec_originals", "", ("Songs", "", ""), ("label", "")))
+                    for tid, tn, an, dur in originals:
+                        rows.append(("_sec_originals", tid, "", (tn, an, dur), ("track", tid)))
+                # Section: Collaborations
+                if collabs:
+                    rows.append(("", "_sec_collabs", "", ("Collaborations", "", ""), ("label", "")))
+                    for tid, tn, an, dur in collabs:
+                        rows.append(("_sec_collabs", tid, "", (tn, an, dur), ("track", tid)))
+                # Section: Remixes
+                if remixes:
+                    rows.append(("", "_sec_remixes", "", ("Remixes", "", ""), ("label", "")))
+                    for tid, tn, an, dur in remixes:
+                        rows.append(("_sec_remixes", tid, "", (tn, an, dur), ("track", tid)))
+            else:  # album
+                albums_list, appearances = [], []
+                ql = q.lower()
                 for x in r.json().get("results", []):
                     alid = f"al_{x['collectionId']}"
-                    if alid not in seen:
-                        seen.add(alid)
-                        rows.append(("", alid, "", (x["collectionName"], x.get("artistName",""), f"{x.get('trackCount',0)} tracks"), ("album", str(x["collectionId"]))))
+                    if alid in seen:
+                        continue
+                    seen.add(alid)
+                    an = x.get("artistName", "")
+                    cid = str(x["collectionId"])
+                    entry = (alid, x["collectionName"], an, f"{x.get('trackCount',0)} tracks", cid)
+                    if an.lower() == ql:
+                        albums_list.append(entry)
+                    else:
+                        appearances.append(entry)
+                if albums_list:
+                    rows.append(("", "_sec_albums", "", ("Albums", "", ""), ("label", "")))
+                    for alid, cn, an, tc, cid in albums_list:
+                        rows.append(("_sec_albums", alid, "", (cn, an, tc), ("album", cid)))
+                if appearances:
+                    rows.append(("", "_sec_appearances", "", ("Appearances", "", ""), ("label", "")))
+                    for alid, cn, an, tc, cid in appearances:
+                        rows.append(("_sec_appearances", alid, "", (cn, an, tc), ("album", cid)))
         except:
             pass
         self.root.after(0, self._show, rows)
