@@ -325,7 +325,24 @@ class App:
                 aid = f"a_{x['artistId']}"
                 if aid not in seen:
                     seen.add(aid)
-                    rows.append(("", aid, "", (x["artistName"], "Artist", ""), ("artist", str(x["artistId"]))))
+                    aname = x["artistName"]
+                    aid_raw = str(x["artistId"])
+                    rows.append(("", aid, "", (aname, "Artist", ""), ("artist", aid_raw)))
+                    # fetch top songs for this artist immediately
+                    try:
+                        rs = requests.get(f"{ITUNES}/search", params={"term": aname, "entity": "song", "limit": 20}, timeout=10)
+                        for s in rs.json().get("results", []):
+                            if str(s.get("artistId")) == aid_raw:
+                                tid = f"t_{s['trackId']}"
+                                if tid not in seen:
+                                    seen.add(tid)
+                                    dur = s.get("trackTimeMillis", 0) // 1000
+                                    m, sec = divmod(dur, 60)
+                                    art = s.get("artworkUrl100", "")
+                                    track_data[tid] = (s["trackName"], s["artistName"], str(s.get("collectionId","")), art)
+                                    rows.append((aid, tid, "", (s["trackName"], "Track", f"{m}:{sec:02d}"), ("track", tid)))
+                    except:
+                        pass
         except:
             pass
         try:
@@ -361,6 +378,11 @@ class App:
                 self.result_tree.insert(p, tk.END, iid=iid, text=txt, values=vals, tags=tags)
             except:
                 pass
+        # auto-expand artist (and their top songs) and album nodes
+        for iid in self.result_tree.get_children():
+            tags = self.result_tree.item(iid, "tags")
+            if tags and tags[0] in ("artist", "album"):
+                self.result_tree.item(iid, open=True)
 
     def _on_dbl(self, event):
         sel = self.result_tree.selection()
@@ -384,10 +406,10 @@ class App:
     def _load_artist(self, aid):
         try:
             r = requests.get(f"{ITUNES}/lookup", params={"id": aid, "entity": "album"}, timeout=10)
-            items = r.json().get("results", [])[1:]
+            albums = r.json().get("results", [])[1:]
         except:
-            items = []
-        self.root.after(0, self._show_artist, items)
+            albums = []
+        self.root.after(0, self._show_artist, albums)
 
     def _show_artist(self, items):
         sel = self.result_tree.selection()
