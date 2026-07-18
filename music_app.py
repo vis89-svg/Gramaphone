@@ -117,7 +117,7 @@ class App:
         main = ctk.CTkFrame(self.root, corner_radius=0)
         main.grid(row=0, column=1, sticky="nsew")
         main.grid_columnconfigure(0, weight=1)
-        main.grid_rowconfigure(1, weight=1)
+        main.grid_rowconfigure(2, weight=1)
 
         top = ctk.CTkFrame(main, fg_color="transparent")
         top.grid(row=0, column=0, sticky="ew", padx=20, pady=(15, 5))
@@ -131,15 +131,31 @@ class App:
                                 font=("Segoe UI", 13), command=self._go)
         self.b.grid(row=0, column=1)
 
+        self.filter_frame = ctk.CTkFrame(main, fg_color="transparent")
+        self.filter_frame.grid(row=1, column=0, sticky="ew", padx=20, pady=(0, 5))
+        self.filter_frame.grid_columnconfigure(3, weight=1)
+
+        self._active_filter = "All"
+        self._filter_btns = {}
+        self._last_query = ""
+        for i, label in enumerate(["All", "Songs", "Artists", "Albums"]):
+            btn = ctk.CTkButton(self.filter_frame, text=label, width=70, height=28,
+                                 font=("Segoe UI", 11),
+                                 fg_color="#2a7a5a" if label == "All" else "#333333",
+                                 hover_color="#3a9a7a",
+                                 command=lambda l=label: self._set_filter(l))
+            btn.grid(row=0, column=i, padx=(0, 5))
+            self._filter_btns[label] = btn
+
         content = ctk.CTkFrame(main, fg_color="transparent")
-        content.grid(row=1, column=0, sticky="nsew", padx=20, pady=(5, 15))
+        content.grid(row=2, column=0, sticky="nsew", padx=20, pady=(0, 15))
         content.grid_columnconfigure(0, weight=1)
         content.grid_rowconfigure(0, weight=1)
 
         self.result_frame = ctk.CTkFrame(content, fg_color="transparent")
         self.result_frame.grid(row=0, column=0, sticky="nsew")
-        self.result_frame.grid_columnconfigure(0, weight=1)
         self.result_frame.grid_rowconfigure(0, weight=1)
+        self.result_frame.grid_columnconfigure(0, weight=1)
 
         self.result_tree = ttk.Treeview(self.result_frame, columns=("a", "b", "c"),
                                         show="tree headings", selectmode="browse",
@@ -310,10 +326,14 @@ class App:
         q = self.e.get().strip()
         if not q:
             return
+        self._last_query = q
         self.b.configure(state=tk.DISABLED, text="Searching...")
         for i in self.result_tree.get_children():
             self.result_tree.delete(i)
         track_data.clear()
+        self._active_filter = "All"
+        for k, btn in self._filter_btns.items():
+            btn.configure(fg_color="#2a7a5a" if k == "All" else "#333333")
         threading.Thread(target=self._search, args=(q,), daemon=True).start()
 
     def _search(self, q):
@@ -328,7 +348,6 @@ class App:
                     aname = x["artistName"]
                     aid_raw = str(x["artistId"])
                     rows.append(("", aid, "", (aname, "Artist", ""), ("artist", aid_raw)))
-                    # fetch top songs for this artist immediately
                     try:
                         rs = requests.get(f"{ITUNES}/search", params={"term": aname, "entity": "song", "limit": 20}, timeout=10)
                         for s in rs.json().get("results", []):
@@ -378,11 +397,76 @@ class App:
                 self.result_tree.insert(p, tk.END, iid=iid, text=txt, values=vals, tags=tags)
             except:
                 pass
-        # auto-expand artist (and their top songs) and album nodes
         for iid in self.result_tree.get_children():
             tags = self.result_tree.item(iid, "tags")
             if tags and tags[0] in ("artist", "album"):
                 self.result_tree.item(iid, open=True)
+
+    def _set_filter(self, label):
+        self._active_filter = label
+        for k, btn in self._filter_btns.items():
+            btn.configure(fg_color="#2a7a5a" if k == label else "#333333",
+                          hover_color="#3a9a7a" if k == label else "#555555")
+        q = self._last_query
+        if not q:
+            return
+        # disable button, clear tree, re-search with entity filter
+        self.b.configure(state=tk.DISABLED, text="Searching...")
+        for i in self.result_tree.get_children():
+            self.result_tree.delete(i)
+        threading.Thread(target=self._filtered_search, args=(q, label), daemon=True).start()
+
+    def _filtered_search(self, q, filt):
+        rows = []
+        seen = set()
+        track_data.clear()
+        entity_map = {"Songs": "song", "Artists": "musicArtist", "Albums": "album"}
+        entity = entity_map.get(filt, "song")
+        limit_map = {"Songs": 30, "Artists": 10, "Albums": 15}
+        lim = limit_map.get(filt, 30)
+        try:
+            r = requests.get(f"{ITUNES}/search", params={"term": q, "entity": entity, "limit": lim}, timeout=10)
+            if entity == "musicArtist":
+                for x in r.json().get("results", []):
+                    aid = f"a_{x['artistId']}"
+                    if aid not in seen:
+                        seen.add(aid)
+                        aname = x["artistName"]
+                        aid_raw = str(x["artistId"])
+                        rows.append(("", aid, "", (aname, "Artist", ""), ("artist", aid_raw)))
+                        try:
+                            rs = requests.get(f"{ITUNES}/search", params={"term": aname, "entity": "song", "limit": 20}, timeout=10)
+                            for s in rs.json().get("results", []):
+                                if str(s.get("artistId")) == aid_raw:
+                                    tid = f"t_{s['trackId']}"
+                                    if tid not in seen:
+                                        seen.add(tid)
+                                        dur = s.get("trackTimeMillis", 0) // 1000
+                                        m, sec = divmod(dur, 60)
+                                        art = s.get("artworkUrl100", "")
+                                        track_data[tid] = (s["trackName"], s["artistName"], str(s.get("collectionId","")), art)
+                                        rows.append((aid, tid, "", (s["trackName"], "Track", f"{m}:{sec:02d}"), ("track", tid)))
+                        except:
+                            pass
+            elif entity == "song":
+                for x in r.json().get("results", []):
+                    tid = f"t_{x['trackId']}"
+                    if tid not in seen:
+                        seen.add(tid)
+                        dur = x.get("trackTimeMillis", 0) // 1000
+                        m, s = divmod(dur, 60)
+                        art = x.get("artworkUrl100", "")
+                        track_data[tid] = (x["trackName"], x["artistName"], str(x.get("collectionId","")), art)
+                        rows.append(("", tid, "", (x["trackName"], f"{x['artistName']}", f"{m}:{s:02d}"), ("track", tid)))
+            else:  # album
+                for x in r.json().get("results", []):
+                    alid = f"al_{x['collectionId']}"
+                    if alid not in seen:
+                        seen.add(alid)
+                        rows.append(("", alid, "", (x["collectionName"], x.get("artistName",""), f"{x.get('trackCount',0)} tracks"), ("album", str(x["collectionId"]))))
+        except:
+            pass
+        self.root.after(0, self._show, rows)
 
     def _on_dbl(self, event):
         sel = self.result_tree.selection()
