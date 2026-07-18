@@ -1,6 +1,6 @@
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
-import subprocess, sys, threading, json, vlc, requests, time, os, io, random
+import subprocess, sys, threading, json, vlc, requests, time, os, io, random, tempfile
 from PIL import Image, ImageTk
 import urllib.request
 import customtkinter as ctk
@@ -217,9 +217,15 @@ class App:
                                     text_color="#888888")
         self.sub_st.grid(row=1, column=1, sticky="w")
 
-        self.dl_btn = ctk.CTkButton(left, text="Download", width=80, height=28,
+        dlf = ctk.CTkFrame(left, fg_color="transparent")
+        dlf.grid(row=0, column=2, rowspan=2, padx=(15, 0))
+        self.dl_q = ctk.CTkOptionMenu(dlf, values=["Original", "MP3 V0"],
+                                       width=100, height=28, font=("Segoe UI", 11))
+        self.dl_q.pack(side=tk.LEFT, padx=(0, 5))
+        self.dl_q.set("Original")
+        self.dl_btn = ctk.CTkButton(dlf, text="Download", width=70, height=28,
                                      command=self._download, state=tk.DISABLED)
-        self.dl_btn.grid(row=0, column=2, rowspan=2, padx=(15, 0))
+        self.dl_btn.pack(side=tk.LEFT)
 
         # center: controls
         center = ctk.CTkFrame(bar, fg_color="transparent")
@@ -593,29 +599,55 @@ class App:
         if self.qidx < 0 or self.qidx >= len(self.queue):
             return
         item = self.queue[self.qidx]
+        self.st.configure(text=f"Downloading: {item.title}...")
+        threading.Thread(target=self._dl_prep, args=(item,), daemon=True).start()
+
+    def _dl_prep(self, item):
+        convert = self.dl_q.get() == "MP3 V0"
         vid = yt_find(item.query)
         if not vid:
-            messagebox.showerror("Error", "Could not find YouTube video.")
+            self.root.after(0, lambda: self._err("Could not find YouTube video."))
             return
-        default = f"{item.artist} - {item.title}"[:200]
-        path = filedialog.asksaveasfilename(defaultextension=".mp3", initialfile=default,
-                                              filetypes=[("MP3", "*.mp3"), ("All", "*.*")])
-        if not path:
+        base = os.path.join(tempfile.gettempdir(), f"tmp3_{vid}")
+        tmp = base + ".%(ext)s"
+        cmd = YT + [f"https://youtube.com/watch?v={vid}", "-f", "bestaudio", "-o", tmp, "-q"]
+        if convert:
+            cmd += ["-x", "--audio-format", "mp3", "--audio-quality", "0"]
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        if r.returncode != 0:
+            self.root.after(0, lambda: self._err(f"Download failed:\n{r.stderr[:200]}"))
             return
-        self.st.configure(text=f"Downloading: {item.title}...")
-        threading.Thread(target=self._dl_thread, args=(vid, path, item), daemon=True).start()
+        # find the actual file created
+        found = None
+        for f in os.listdir(tempfile.gettempdir()):
+            if f.startswith(f"tmp3_{vid}") and os.path.isfile(os.path.join(tempfile.gettempdir(), f)):
+                found = os.path.join(tempfile.gettempdir(), f)
+                break
+        if not found:
+            self.root.after(0, lambda: self._err("File not found after download."))
+            return
+        ext = os.path.splitext(found)[1]
+        default = f"{item.artist} - {item.title}{ext}"[:200]
+        self.root.after(0, lambda: self._dl_save(found, default, item))
 
-    def _dl_thread(self, vid, path, item):
+    def _dl_save(self, src, default_name, item):
+        path = filedialog.asksaveasfilename(initialfile=default_name, filetypes=[("All files", "*.*")])
+        if not path:
+            try:
+                if os.path.exists(src):
+                    os.remove(src)
+            except:
+                pass
+            return
+        self.st.configure(text=f"Saving: {item.title}...")
         try:
-            r = subprocess.run(YT + [f"https://youtube.com/watch?v={vid}", "-x", "--audio-format", "mp3",
-                                     "-o", path, "-q"], capture_output=True, text=True, timeout=120)
-            if r.returncode == 0:
-                self.root.after(0, lambda: self.st.configure(text=f"Downloaded: {item.artist} - {item.title}"))
-                self.root.after(0, lambda: messagebox.showinfo("Done", f"Saved:\n{path}"))
-            else:
-                self.root.after(0, lambda: self._err(f"Download failed:\n{r.stderr[:200]}"))
-        except subprocess.TimeoutExpired:
-            self.root.after(0, lambda: self._err("Download timed out."))
+            import shutil
+            shutil.copy2(src, path)
+            os.remove(src)
+            self.st.configure(text=f"Downloaded: {item.artist} - {item.title}")
+            messagebox.showinfo("Done", f"Saved:\n{path}")
+        except Exception as e:
+            self._err(f"Save failed: {e}")
 
     def _seek_drag(self, val):
         if self.seeking:
