@@ -10,6 +10,41 @@ ctk.set_default_color_theme("green")
 
 YT = [sys.executable, "-m", "yt_dlp", "--remote-components", "ejs:github"]
 ITUNES = "https://itunes.apple.com"
+DZ = "https://api.deezer.com"
+
+def dz_get(path, params=None):
+    try:
+        r = requests.get(f"{DZ}{path}", params=params, timeout=10)
+        return r.json()
+    except:
+        return {}
+
+def dz_search_playlists(q, limit=25):
+    data = dz_get("/search/playlist", {"q": q, "limit": limit})
+    return data.get("data", [])
+
+def dz_playlist(p):
+    return {
+        "id": p.get("id", 0),
+        "title": p.get("title", ""),
+        "description": p.get("description", ""),
+        "nb_tracks": p.get("nb_tracks", 0),
+        "fans": p.get("fans", 0),
+        "picture": (p.get("picture_medium", "") or "").replace("250x250", "100x100"),
+        "creator_name": p.get("creator", {}).get("name", ""),
+    }
+
+def dz_track(t):
+    return {
+        "trackName": t.get("title", ""),
+        "artistName": t.get("artist", {}).get("name", ""),
+        "artistId": t.get("artist", {}).get("id", 0),
+        "collectionName": t.get("album", {}).get("title", ""),
+        "collectionId": t.get("album", {}).get("id", 0),
+        "artworkUrl100": (t.get("album", {}).get("cover_medium", "") or "").replace("250x250", "100x100"),
+        "trackId": t.get("id", 0),
+        "trackTimeMillis": t.get("duration", 0) * 1000,
+    }
 
 vlc_instance = vlc.Instance("--aout=directsound", "--quiet")
 player = vlc_instance.media_player_new()
@@ -378,9 +413,21 @@ class App:
         self.ss_frame = ctk.CTkFrame(self.ss_scroll, fg_color="transparent")
         self.ss_frame.pack(fill=tk.X)
 
+        # Playlists (from Deezer)
+        pls = ctk.CTkFrame(self.home_frame, fg_color="transparent")
+        pls.grid(row=5, column=0, sticky="nsew", pady=(0, 28))
+        pls.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(pls, text="Playlists", font=("Segoe UI", 20, "bold"),
+                     text_color=TXT).pack(anchor="w")
+        self.pl_scroll = ctk.CTkScrollableFrame(pls, fg_color="transparent",
+                                                  orientation="horizontal", height=180)
+        self.pl_scroll.pack(fill=tk.X, pady=(8, 0))
+        self.pl_frame = ctk.CTkFrame(self.pl_scroll, fg_color="transparent")
+        self.pl_frame.pack(fill=tk.X)
+
         # Recently Played
         rp = ctk.CTkFrame(self.home_frame, fg_color="transparent")
-        rp.grid(row=5, column=0, sticky="ew", pady=(0, 28))
+        rp.grid(row=6, column=0, sticky="ew", pady=(0, 28))
         rp.grid_columnconfigure(0, weight=1)
 
         rph = ctk.CTkFrame(rp, fg_color="transparent")
@@ -399,7 +446,7 @@ class App:
 
         # Trending Songs + Live Streams row
         row2 = ctk.CTkFrame(self.home_frame, fg_color="transparent")
-        row2.grid(row=6, column=0, sticky="nsew", pady=(0, 28))
+        row2.grid(row=7, column=0, sticky="nsew", pady=(0, 28))
         row2.grid_columnconfigure(0, weight=2)
         row2.grid_columnconfigure(1, weight=1, minsize=300)
         row2.grid_rowconfigure(0, weight=1)
@@ -495,6 +542,84 @@ class App:
         self.mix_frame = ctk.CTkFrame(self.mix_scroll, fg_color="transparent")
         self.mix_frame.pack(fill=tk.X)
 
+    def _refresh_playlists(self):
+        for w in self.pl_frame.winfo_children():
+            w.destroy()
+        def fetch():
+            try:
+                data = dz_get("/chart/0/playlists", {"limit": 10})
+                items = data.get("data", [])
+            except:
+                items = []
+            playlists = [dz_playlist(p) for p in items]
+            self.root.after(0, lambda: self._display_playlists(playlists))
+        threading.Thread(target=fetch, daemon=True).start()
+
+    def _display_playlists(self, playlists):
+        for w in self.pl_frame.winfo_children():
+            w.destroy()
+        if not playlists:
+            ctk.CTkLabel(self.pl_frame, text="No playlists found.",
+                         font=("Segoe UI", 12), text_color=TXT3).pack(pady=20)
+            return
+        for pl in playlists:
+            card = ctk.CTkFrame(self.pl_frame, fg_color=CARD, corner_radius=12, width=180, height=180)
+            card.pack(side=tk.LEFT, padx=6)
+            card.pack_propagate(False)
+            img = None
+            pic = pl.get("picture", "")
+            if pic:
+                img = fetch_art(pic.replace("100x100", "80x80"), (56, 56))
+            ilbl = ctk.CTkLabel(card, text="", image=img, width=56, height=56) if img else ctk.CTkLabel(card, text="\U0001F3B6", font=("Segoe UI", 24))
+            ilbl.pack(pady=(14, 4))
+            ctk.CTkLabel(card, text=pl["title"][:18], font=("Segoe UI", 12, "bold"),
+                         text_color=TXT).pack()
+            ctk.CTkLabel(card, text=f"{pl['nb_tracks']} tracks", font=("Segoe UI", 10),
+                         text_color=TXT3).pack()
+            ctk.CTkButton(card, text="\u25b6  Open", width=80, height=28,
+                          fg_color=GREEN, hover_color="#1aa34a",
+                          text_color="#000000", corner_radius=14,
+                          font=("Segoe UI", 11, "bold"),
+                          command=lambda pid=pl["id"]: self._open_dz_playlist(pid)).pack(pady=(8, 0))
+
+    def _open_dz_playlist(self, plid):
+        def fetch():
+            pl = dz_get(f"/playlist/{plid}")
+            tracks = [dz_track(t) for t in pl.get("tracks", {}).get("data", [])]
+            self.root.after(0, lambda: self._show_dz_playlist(pl.get("title", "Playlist"), tracks))
+        threading.Thread(target=fetch, daemon=True).start()
+
+    def _show_dz_playlist(self, title, tracks):
+        win = ctk.CTkToplevel(self.root)
+        win.title(title)
+        win.geometry("600x450")
+        win.transient(self.root)
+        win.grab_set()
+        ctk.CTkLabel(win, text=title, font=("Segoe UI", 18, "bold"),
+                     text_color=TXT).pack(pady=(14, 10))
+        sf = ctk.CTkScrollableFrame(win, fg_color="transparent")
+        sf.pack(fill=tk.BOTH, expand=True, padx=16, pady=(0, 12))
+        for i, t in enumerate(tracks):
+            r = ctk.CTkFrame(sf, fg_color=CARD, corner_radius=8)
+            r.pack(fill=tk.X, pady=2)
+            r.grid_columnconfigure(1, weight=1)
+            ctk.CTkLabel(r, text=str(i+1), width=28, font=("Segoe UI", 11),
+                         text_color=TXT3).grid(row=0, column=0, rowspan=2, padx=(10, 6))
+            ctk.CTkLabel(r, text=t["trackName"], font=("Segoe UI", 13, "bold"),
+                         text_color=TXT, anchor="w").grid(row=0, column=1, sticky="w", padx=(0, 8))
+            ctk.CTkLabel(r, text=f"{t['artistName']}  \u00b7  {t['collectionName']}" if t['collectionName'] else t['artistName'],
+                         font=("Segoe UI", 11), text_color=TXT3, anchor="w").grid(row=1, column=1, sticky="w", padx=(0, 8))
+            ctk.CTkButton(r, text="\u25b6", width=32, height=28,
+                          fg_color=GREEN, hover_color="#1aa34a",
+                          text_color="#000000", corner_radius=8,
+                          font=("Segoe UI", 10, "bold"),
+                          command=lambda t=t: self._enqueue(t["trackName"], t["artistName"], t.get("collectionName",""), t.get("artworkUrl100",""))).grid(row=0, column=2, rowspan=2, padx=(0, 4))
+        ctk.CTkButton(win, text="Queue All", command=lambda: (
+            [self._enqueue(t["trackName"], t["artistName"], t.get("collectionName",""), t.get("artworkUrl100","")) for t in tracks],
+            win.destroy()),
+            fg_color=GREEN, hover_color="#1aa34a", text_color="#000000",
+            corner_radius=14, font=("Segoe UI", 13, "bold")).pack(pady=(0, 14))
+
     def _refresh_home_mixes(self):
         for w in self.mix_frame.winfo_children():
             w.destroy()
@@ -582,7 +707,7 @@ class App:
             try:
                 rec_rows = c.execute("""
                     SELECT rec_type, item_key FROM recommendation_history
-                    WHERE profile_id=? AND recommended_at >= datetime('now', '-7 days')
+                    WHERE profile_id=? AND recommended_at >= datetime('now', '-1 days')
                 """, (pid,)).fetchall()
                 for rtype, key in rec_rows:
                     if rtype == 'artist':
@@ -675,15 +800,15 @@ class App:
             except:
                 pass
 
-            # 1. Suggested Artists (diversity: exclude recent recs)
+            # 1. Suggested Artists — search songs in each genre to find real artists in that genre
             artists_result = []
             seen_artists = set(favs) | played_heavy
             for genre in top_genres[:2]:
                 try:
-                    r = requests.get(f"{ITUNES}/search", params={"term": genre, "entity": "musicArtist", "limit": 8}, timeout=8)
+                    r = requests.get(f"{ITUNES}/search", params={"term": genre, "entity": "song", "limit": 25}, timeout=8)
                     for x in r.json().get("results", []):
-                        aname = x["artistName"]
-                        if aname not in seen_artists and aname not in recent_recs_artists:
+                        aname = x.get("artistName", "")
+                        if aname and aname not in seen_artists and aname not in recent_recs_artists:
                             seen_artists.add(aname)
                             artists_result.append(x)
                 except:
@@ -695,8 +820,10 @@ class App:
             album_artists = [r[0] for r in aff_rows[:4]] if aff_rows else favs[:3]
             for a in album_artists:
                 try:
-                    r = requests.get(f"{ITUNES}/search", params={"term": a, "entity": "album", "limit": 4}, timeout=8)
+                    r = requests.get(f"{ITUNES}/search", params={"term": a, "entity": "album", "limit": 4}, timeout=10)
                     for x in r.json().get("results", []):
+                        if x.get("wrapperType") != "collection":
+                            continue
                         name = x.get("collectionName", "")
                         al_key = f"{name}||{x.get('artistName','')}"
                         if name and name not in seen_albums and al_key not in recent_recs_albums:
@@ -704,6 +831,22 @@ class App:
                             albums_result.append(x)
                 except:
                     pass
+            # Fallback: if no albums found, search by genre
+            if not albums_result and top_genres:
+                for genre in top_genres[:2]:
+                    try:
+                        r = requests.get(f"{ITUNES}/search", params={"term": genre, "entity": "album", "limit": 8}, timeout=10)
+                        for x in r.json().get("results", []):
+                            if x.get("wrapperType") != "collection":
+                                continue
+                            name = x.get("collectionName", "")
+                            aname = x.get("artistName", "")
+                            al_key = f"{name}||{aname}"
+                            if name and name not in seen_albums and al_key not in recent_recs_albums and aname not in played_heavy:
+                                seen_albums.add(name)
+                                albums_result.append(x)
+                    except:
+                        pass
 
             # 3. Suggested Songs
             heard_songs = set()
@@ -772,7 +915,7 @@ class App:
                     for x in albums_result[:8]:
                         rc.execute("INSERT OR IGNORE INTO recommendation_history (profile_id, rec_type, item_key, item_name) VALUES (?,?,?,?)",
                                    (pid, 'album', f"{x.get('collectionName','')}||{x.get('artistName','')}", x.get("collectionName","")))
-                    for x in songs_result:
+                    for x in songs_result[:12]:
                         rc.execute("INSERT OR IGNORE INTO recommendation_history (profile_id, rec_type, item_key, item_name) VALUES (?,?,?,?)",
                                    (pid, 'song', f"{x.get('trackName','')}||{x.get('artistName','')}", x.get("trackName","")))
                     rc.commit()
@@ -807,7 +950,103 @@ class App:
 
         threading.Thread(target=fetch, daemon=True).start()
 
-    def _show_album_popup(self, album_name, artist_name, artwork_url):
+    def _show_artist_profile(self, artist_name):
+        def fetch():
+            songs, albums, playlists = [], [], []
+            try:
+                r = requests.get(f"{ITUNES}/search", params={"term": artist_name, "entity": "song", "limit": 25}, timeout=10)
+                songs = [x for x in r.json().get("results", []) if x.get("artistName","").lower() == artist_name.lower()][:20]
+            except:
+                pass
+            try:
+                r = requests.get(f"{ITUNES}/search", params={"term": artist_name, "entity": "album", "limit": 15}, timeout=10)
+                albums = [x for x in r.json().get("results", []) if x.get("artistName","").lower() == artist_name.lower()]
+            except:
+                pass
+            try:
+                for x in dz_search_playlists(artist_name, 6):
+                    playlists.append(dz_playlist(x))
+            except:
+                pass
+            self.root.after(0, lambda: self._build_artist_profile(artist_name, songs, albums, playlists))
+        threading.Thread(target=fetch, daemon=True).start()
+
+    def _build_artist_profile(self, artist_name, songs, albums, playlists):
+        win = ctk.CTkToplevel(self.root)
+        win.title(f"{artist_name}")
+        win.geometry("650x500")
+        win.transient(self.root)
+        win.grab_set()
+        sf = ctk.CTkScrollableFrame(win, fg_color="transparent")
+        sf.pack(fill=tk.BOTH, expand=True, padx=16, pady=(14, 12))
+        ctk.CTkLabel(sf, text=artist_name, font=("Segoe UI", 20, "bold"),
+                     text_color=TXT).pack(anchor="w", pady=(0, 10))
+        if songs:
+            ctk.CTkLabel(sf, text="Top Songs", font=("Segoe UI", 15, "bold"),
+                         text_color=TXT).pack(anchor="w", pady=(4, 4))
+            for i, s in enumerate(songs):
+                title = s.get("trackName","")
+                aname = s.get("artistName","")
+                album = s.get("collectionName","")
+                art = s.get("artworkUrl100","")
+                r = ctk.CTkFrame(sf, fg_color=CARD, corner_radius=8)
+                r.pack(fill=tk.X, pady=2)
+                r.grid_columnconfigure(1, weight=1)
+                ctk.CTkLabel(r, text=str(i+1), width=24, font=("Segoe UI", 11),
+                             text_color=TXT3).grid(row=0, column=0, rowspan=2, padx=(8, 4))
+                ctk.CTkLabel(r, text=title, font=("Segoe UI", 12, "bold"),
+                             text_color=TXT, anchor="w").grid(row=0, column=1, sticky="w", padx=(0, 6))
+                ctk.CTkLabel(r, text=album, font=("Segoe UI", 10),
+                             text_color=TXT3, anchor="w").grid(row=1, column=1, sticky="w", padx=(0, 6))
+                ctk.CTkButton(r, text="\u25b6", width=28, height=24,
+                              fg_color=GREEN, hover_color="#1aa34a", text_color="#000000",
+                              corner_radius=8, font=("Segoe UI", 10, "bold"),
+                              command=lambda t=title, a=aname, al=album, au=art:
+                                  self._enqueue(t, a, al, au)).grid(row=0, column=2, rowspan=2, padx=(0, 8))
+        if albums:
+            ctk.CTkLabel(sf, text="Albums", font=("Segoe UI", 15, "bold"),
+                         text_color=TXT).pack(anchor="w", pady=(10, 4))
+            for x in albums:
+                an = x.get("collectionName","")
+                art = x.get("artworkUrl100","")
+                tc = x.get("trackCount",0)
+                r = ctk.CTkFrame(sf, fg_color=CARD, corner_radius=8)
+                r.pack(fill=tk.X, pady=2)
+                r.grid_columnconfigure(1, weight=1)
+                ctk.CTkLabel(r, text="\U0001F4BF", font=("Segoe UI", 14)).grid(row=0, column=0, padx=(8, 4))
+                ctk.CTkLabel(r, text=an, font=("Segoe UI", 12, "bold"),
+                             text_color=TXT, anchor="w").grid(row=0, column=1, sticky="w", padx=(0, 6))
+                ctk.CTkLabel(r, text=f"{tc} tracks", font=("Segoe UI", 10),
+                             text_color=TXT3, anchor="w").grid(row=1, column=1, sticky="w", padx=(0, 6))
+                ctk.CTkButton(r, text="View Tracks", width=80, height=24,
+                              fg_color=GREEN, hover_color="#1aa34a", text_color="#000000",
+                              corner_radius=10, font=("Segoe UI", 9, "bold"),
+                              command=lambda n=an, a=artist_name, u=art:
+                                  self._show_album_popup(n, a, u)).grid(row=0, column=2, rowspan=2, padx=(0, 8))
+        if playlists:
+            ctk.CTkLabel(sf, text="Playlists", font=("Segoe UI", 15, "bold"),
+                         text_color=TXT).pack(anchor="w", pady=(10, 4))
+            for pl in playlists:
+                plid = pl["id"]
+                plt = pl["title"]
+                nt = pl["nb_tracks"]
+                r = ctk.CTkFrame(sf, fg_color=CARD, corner_radius=8)
+                r.pack(fill=tk.X, pady=2)
+                r.grid_columnconfigure(1, weight=1)
+                ctk.CTkLabel(r, text="\U0001F3B6", font=("Segoe UI", 14)).grid(row=0, column=0, padx=(8, 4))
+                ctk.CTkLabel(r, text=plt, font=("Segoe UI", 12, "bold"),
+                             text_color=TXT, anchor="w").grid(row=0, column=1, sticky="w", padx=(0, 6))
+                ctk.CTkLabel(r, text=f"{nt} tracks", font=("Segoe UI", 10),
+                             text_color=TXT3, anchor="w").grid(row=1, column=1, sticky="w", padx=(0, 6))
+                ctk.CTkButton(r, text="Open", width=60, height=24,
+                              fg_color=GREEN, hover_color="#1aa34a", text_color="#000000",
+                              corner_radius=10, font=("Segoe UI", 9, "bold"),
+                              command=lambda pid=plid: self._open_dz_playlist(pid)).grid(row=0, column=2, rowspan=2, padx=(0, 8))
+        if not songs and not albums and not playlists:
+            ctk.CTkLabel(sf, text="No data found for this artist.",
+                         font=("Segoe UI", 12), text_color=TXT3).pack(pady=20)
+
+    def _show_album_popup(self, album_name, artist_name, artwork_url=""):
         win = ctk.CTkToplevel(self.root)
         win.title(f"{album_name}")
         win.geometry("550x450")
@@ -977,7 +1216,7 @@ class App:
         self._active_filter = "All"
         self._filter_btns = {}
         self._last_query = ""
-        for i, label in enumerate(["All", "Songs", "Artists", "Albums"]):
+        for i, label in enumerate(["All", "Songs", "Artists", "Albums", "Playlists"]):
             btn = ctk.CTkButton(ff, text=label, width=80, height=30,
                                 font=("Segoe UI", 12),
                                 fg_color=GREEN if label == "All" else CARD,
@@ -1175,6 +1414,7 @@ class App:
             self.current_page = "home"
             self._refresh_suggestions()
             self._refresh_recently_played()
+            self._refresh_playlists()
         elif idx == 1:
             self.search_frame.grid()
             self.current_page = "search"
@@ -1183,6 +1423,7 @@ class App:
             self.current_page = "home"
             self._refresh_suggestions()
             self._refresh_recently_played()
+            self._refresh_playlists()
         elif idx == 3:
             self.search_frame.grid()
             self.current_page = "search"
@@ -1191,6 +1432,7 @@ class App:
             self.current_page = "home"
             self._refresh_suggestions()
             self._refresh_recently_played()
+            self._refresh_playlists()
 
     def _show_search(self):
         q = self.e.get().strip()
@@ -1281,7 +1523,7 @@ class App:
         except:
             pass
         try:
-            r = requests.get(f"{ITUNES}/search", params={"term": q, "entity": "album", "limit": 10}, timeout=10)
+            r = requests.get(f"{ITUNES}/search", params={"term": q, "entity": "album", "limit": 25}, timeout=10)
             for x in r.json().get("results", []):
                 alid = f"al_{x['collectionId']}"
                 if alid not in seen:
@@ -1294,7 +1536,7 @@ class App:
         except:
             pass
         try:
-            r = requests.get(f"{ITUNES}/search", params={"term": q, "entity": "song", "limit": 15}, timeout=10)
+            r = requests.get(f"{ITUNES}/search", params={"term": q, "entity": "song", "limit": 25}, timeout=10)
             for x in r.json().get("results", []):
                 tid = f"t_{x['trackId']}"
                 if tid not in seen:
@@ -1309,6 +1551,16 @@ class App:
                     sc = _score_track(tn, aname, tid)
                     score_map[tid] = sc
                     rows.append((p, tid, "", (tn, "Track", f"{aname} \u00b7 {m}:{s:02d}"), ("track", tid)))
+        except:
+            pass
+        # Playlists (from Deezer)
+        try:
+            for x in dz_search_playlists(q, 12):
+                pl = dz_playlist(x)
+                plid = f"pl_{pl['id']}"
+                if plid not in seen:
+                    seen.add(plid)
+                    rows.append(("", plid, "", (pl["title"], "Playlist", f"{pl['nb_tracks']} tracks"), ("playlist", str(pl["id"]))))
         except:
             pass
         # Sort: top-scored items first, track children stay under parents
@@ -1366,9 +1618,9 @@ class App:
         score_map = {}
         def _sc(aname):
             return 10 if aname in fav_artists else (5 if aname in aff_artists else 0)
-        entity_map = {"Songs": "song", "Artists": "musicArtist", "Albums": "album"}
+        entity_map = {"Songs": "song", "Artists": "musicArtist", "Albums": "album", "Playlists": "playlist"}
         entity = entity_map.get(filt, "song")
-        limit_map = {"Songs": 200, "Artists": 10, "Albums": 200}
+        limit_map = {"Songs": 200, "Artists": 10, "Albums": 200, "Playlists": 50}
         lim = limit_map.get(filt, 200)
         try:
             r = requests.get(f"{ITUNES}/search", params={"term": q, "entity": entity, "limit": lim}, timeout=15)
@@ -1418,6 +1670,13 @@ class App:
                     rows.append(("", "_sec_remixes", "", ("Remixes", "", ""), ("label", "")))
                     for tid, tn, an, dur in remixes:
                         rows.append(("_sec_remixes", tid, "", (tn, an, dur), ("track", tid)))
+            elif entity == "playlist":
+                for x in dz_search_playlists(q, lim):
+                    pl = dz_playlist(x)
+                    plid = f"pl_{pl['id']}"
+                    if plid not in seen:
+                        seen.add(plid)
+                        rows.append(("", plid, "", (pl["title"], "Playlist", f"{pl['nb_tracks']} tracks by {pl['creator_name']}"), ("playlist", str(pl["id"]))))
             else:
                 albums_list, appearances = [], []
                 ql = q.lower()
@@ -1458,10 +1717,22 @@ class App:
             return
         typ = tags[0]
         rid = tags[1]
+        vals = self.result_tree.item(iid, "values") or []
         if typ == "artist":
-            threading.Thread(target=self._load_artist, args=(rid,), daemon=True).start()
+            aname = vals[0] if vals else ""
+            if aname:
+                threading.Thread(target=self._show_artist_profile, args=(aname,), daemon=True).start()
         elif typ == "album":
-            threading.Thread(target=self._load_album, args=(rid,), daemon=True).start()
+            album_name = vals[0] if vals else ""
+            artist_name = ""
+            if len(vals) >= 3 and vals[1] == "Album":
+                artist_name = vals[2]
+            elif len(vals) >= 2:
+                artist_name = vals[1]
+            if album_name:
+                self._show_album_popup(album_name, artist_name)
+        elif typ == "playlist":
+            self._open_dz_playlist(rid)
         elif typ == "track":
             info = track_data.get(rid)
             if info:
@@ -1503,6 +1774,31 @@ class App:
             except:
                 pass
         self.result_tree.item(pid, open=True)
+
+    def _load_playlist(self, plid):
+        pl = dz_get(f"/playlist/{plid}")
+        tracks = [dz_track(t) for t in pl.get("tracks", {}).get("data", [])]
+        self.root.after(0, lambda: self._show_playlist_tracks(pl.get("title", "Playlist"), tracks))
+
+    def _show_playlist_tracks(self, title, tracks):
+        sel = self.result_tree.selection()
+        pid = sel[0] if sel else ""
+        if pid:
+            for c in self.result_tree.get_children(pid):
+                self.result_tree.delete(c)
+        for x in tracks:
+            tid = f"t_{x['trackId']}"
+            dur = x["trackTimeMillis"] // 1000
+            m, s = divmod(dur, 60)
+            track_data[tid] = (x["trackName"], x["artistName"], str(x["collectionId"]), x["artworkUrl100"])
+            try:
+                self.result_tree.insert(pid, tk.END, iid=tid, text="",
+                              values=(x["trackName"], "Track", f"{m}:{s:02d}"),
+                              tags=("track", tid))
+            except:
+                pass
+        if pid:
+            self.result_tree.item(pid, open=True)
 
     def _load_album(self, alid):
         try:
@@ -1968,7 +2264,7 @@ class App:
             self.profile_id = row[0]
             self.profile_languages = json.loads(row[1]) if row[1] else []
             self.profile_artists = json.loads(row[2]) if row[2] else []
-            self.root.after(100, lambda: (self._refresh_home_mixes(), self._refresh_suggestions(), self._refresh_recently_played(),
+            self.root.after(100, lambda: (self._refresh_home_mixes(), self._refresh_suggestions(), self._refresh_recently_played(), self._refresh_playlists(),
                                           threading.Thread(target=self._recalculate_affinities, daemon=True).start(),
                                           self._generate_auto_playlists_async()))
         else:
@@ -2653,7 +2949,7 @@ class App:
 
         def generate():
             self._generate_playlists()
-            self.root.after(0, lambda: (gen.destroy(), self._refresh_sidebar_playlists(), self._refresh_home_mixes(), self._refresh_suggestions(), self._refresh_recently_played(),
+            self.root.after(0, lambda: (gen.destroy(), self._refresh_sidebar_playlists(), self._refresh_home_mixes(), self._refresh_suggestions(), self._refresh_recently_played(), self._refresh_playlists(),
                                           threading.Thread(target=self._recalculate_affinities, daemon=True).start(),
                                           self._generate_auto_playlists_async()))
 
