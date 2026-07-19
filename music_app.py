@@ -61,6 +61,12 @@ def init_db():
         position INTEGER,
         FOREIGN KEY(playlist_id) REFERENCES playlists(id)
     )""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS listening_history (
+        id INTEGER PRIMARY KEY, profile_id INTEGER,
+        title TEXT, artist TEXT, album TEXT, art_url TEXT, video_id TEXT,
+        played_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY(profile_id) REFERENCES profiles(id)
+    )""")
     conn.commit()
     return conn
 
@@ -300,9 +306,45 @@ class App:
             ctk.CTkLabel(carousel, text="\u25cf", font=("Segoe UI", 8),
                          text_color=TXT3).pack(side=tk.LEFT, padx=3)
 
+        # Suggested Artists
+        sa = ctk.CTkFrame(self.home_frame, fg_color="transparent")
+        sa.grid(row=2, column=0, sticky="nsew", pady=(0, 28))
+        sa.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(sa, text="Suggested Artists", font=("Segoe UI", 20, "bold"),
+                     text_color=TXT).pack(anchor="w")
+        self.sa_scroll = ctk.CTkScrollableFrame(sa, fg_color="transparent",
+                                                  orientation="horizontal", height=180)
+        self.sa_scroll.pack(fill=tk.X, pady=(8, 0))
+        self.sa_frame = ctk.CTkFrame(self.sa_scroll, fg_color="transparent")
+        self.sa_frame.pack(fill=tk.X)
+
+        # Suggested Albums
+        sal = ctk.CTkFrame(self.home_frame, fg_color="transparent")
+        sal.grid(row=3, column=0, sticky="nsew", pady=(0, 28))
+        sal.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(sal, text="Suggested Albums", font=("Segoe UI", 20, "bold"),
+                     text_color=TXT).pack(anchor="w")
+        self.sal_scroll = ctk.CTkScrollableFrame(sal, fg_color="transparent",
+                                                   orientation="horizontal", height=180)
+        self.sal_scroll.pack(fill=tk.X, pady=(8, 0))
+        self.sal_frame = ctk.CTkFrame(self.sal_scroll, fg_color="transparent")
+        self.sal_frame.pack(fill=tk.X)
+
+        # Suggested Songs
+        ss = ctk.CTkFrame(self.home_frame, fg_color="transparent")
+        ss.grid(row=4, column=0, sticky="nsew", pady=(0, 28))
+        ss.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(ss, text="Suggested Songs", font=("Segoe UI", 20, "bold"),
+                     text_color=TXT).pack(anchor="w")
+        self.ss_scroll = ctk.CTkScrollableFrame(ss, fg_color="transparent",
+                                                  orientation="horizontal", height=180)
+        self.ss_scroll.pack(fill=tk.X, pady=(8, 0))
+        self.ss_frame = ctk.CTkFrame(self.ss_scroll, fg_color="transparent")
+        self.ss_frame.pack(fill=tk.X)
+
         # Recently Played
         rp = ctk.CTkFrame(self.home_frame, fg_color="transparent")
-        rp.grid(row=2, column=0, sticky="ew", pady=(0, 28))
+        rp.grid(row=5, column=0, sticky="ew", pady=(0, 28))
         rp.grid_columnconfigure(0, weight=1)
 
         rph = ctk.CTkFrame(rp, fg_color="transparent")
@@ -321,7 +363,7 @@ class App:
 
         # Trending Songs + Live Streams row
         row2 = ctk.CTkFrame(self.home_frame, fg_color="transparent")
-        row2.grid(row=3, column=0, sticky="nsew", pady=(0, 28))
+        row2.grid(row=6, column=0, sticky="nsew", pady=(0, 28))
         row2.grid_columnconfigure(0, weight=2)
         row2.grid_columnconfigure(1, weight=1, minsize=300)
         row2.grid_rowconfigure(0, weight=1)
@@ -445,6 +487,237 @@ class App:
                           font=("Segoe UI", 11, "bold"),
                           command=lambda pid=pl_id: self._open_playlist(pid)).pack(pady=(8, 0))
 
+    def _refresh_suggestions(self):
+        for w in self.sa_frame.winfo_children():
+            w.destroy()
+        for w in self.sal_frame.winfo_children():
+            w.destroy()
+        for w in self.ss_frame.winfo_children():
+            w.destroy()
+        if not self.profile_id or not self.profile_artists:
+            return
+
+        def fetch():
+            favs = self.profile_artists[:5]
+            genres = []
+
+            # Collect genres from favorite artists
+            for a in favs:
+                try:
+                    r = requests.get(f"{ITUNES}/search", params={"term": a, "entity": "song", "limit": 2}, timeout=8)
+                    for s in r.json().get("results", []):
+                        g = s.get("primaryGenreName", "")
+                        if g:
+                            genres.append(g)
+                except:
+                    pass
+
+            # Also collect genres from listening history
+            try:
+                c = self.db.execute(
+                    "SELECT DISTINCT artist FROM listening_history WHERE profile_id=? ORDER BY id DESC LIMIT 10",
+                    (self.profile_id,))
+                for row in c.fetchall():
+                    try:
+                        r = requests.get(f"{ITUNES}/search", params={"term": row[0], "entity": "song", "limit": 1}, timeout=5)
+                        for s in r.json().get("results", []):
+                            g = s.get("primaryGenreName", "")
+                            if g:
+                                genres.append(g)
+                    except:
+                        pass
+            except:
+                pass
+
+            top_genre = max(set(genres), key=genres.count) if genres else "Pop"
+
+            # 1. Suggested Artists
+            artists_result = []
+            try:
+                r = requests.get(f"{ITUNES}/search", params={"term": top_genre, "entity": "musicArtist", "limit": 8}, timeout=8)
+                for x in r.json().get("results", []):
+                    if x["artistName"] not in favs:
+                        artists_result.append(x)
+            except:
+                pass
+
+            # 2. Suggested Albums
+            albums_result = []
+            seen_albums = set()
+            for a in favs[:3]:
+                try:
+                    r = requests.get(f"{ITUNES}/search", params={"term": a, "entity": "album", "limit": 5}, timeout=8)
+                    for x in r.json().get("results", []):
+                        name = x.get("collectionName", "")
+                        if name and name not in seen_albums:
+                            seen_albums.add(name)
+                            albums_result.append(x)
+                except:
+                    pass
+
+            # 3. Suggested Songs
+            songs_result = []
+            seen_songs = set()
+            try:
+                r = requests.get(f"{ITUNES}/search", params={"term": top_genre, "entity": "song", "limit": 10}, timeout=8)
+                for x in r.json().get("results", []):
+                    key = (x.get("trackName", ""), x.get("artistName", ""))
+                    if key not in seen_songs:
+                        seen_songs.add(key)
+                        songs_result.append(x)
+            except:
+                pass
+
+            self.root.after(0, self._display_suggestions, artists_result, albums_result, songs_result)
+
+        threading.Thread(target=fetch, daemon=True).start()
+
+    def _show_artist_popup(self, artist_name, artwork_url):
+        win = ctk.CTkToplevel(self.root)
+        win.title(f"{artist_name} - Top Songs")
+        win.geometry("550x450")
+        win.transient(self.root)
+        win.grab_set()
+        ctk.CTkLabel(win, text=f"Top Songs - {artist_name}", font=("Segoe UI", 17, "bold"),
+                     text_color=TXT).pack(pady=(14, 8))
+        sf = ctk.CTkScrollableFrame(win, fg_color="transparent")
+        sf.pack(fill=tk.BOTH, expand=True, padx=16, pady=(0, 12))
+        ctk.CTkLabel(sf, text="Loading...", font=("Segoe UI", 12), text_color=TXT3).pack(pady=20)
+
+        def fetch():
+            try:
+                r = requests.get(f"{ITUNES}/search", params={"term": artist_name, "entity": "song", "limit": 20}, timeout=10)
+                items = r.json().get("results", [])
+            except:
+                items = []
+            self.root.after(0, lambda: self._populate_track_list(sf, items))
+
+        threading.Thread(target=fetch, daemon=True).start()
+
+    def _show_album_popup(self, album_name, artist_name, artwork_url):
+        win = ctk.CTkToplevel(self.root)
+        win.title(f"{album_name}")
+        win.geometry("550x450")
+        win.transient(self.root)
+        win.grab_set()
+        ctk.CTkLabel(win, text=f"{album_name}", font=("Segoe UI", 17, "bold"),
+                     text_color=TXT).pack(pady=(14, 8))
+        ctk.CTkLabel(win, text=f"by {artist_name}", font=("Segoe UI", 12),
+                     text_color=TXT3).pack(pady=(0, 8))
+        sf = ctk.CTkScrollableFrame(win, fg_color="transparent")
+        sf.pack(fill=tk.BOTH, expand=True, padx=16, pady=(0, 12))
+        ctk.CTkLabel(sf, text="Loading...", font=("Segoe UI", 12), text_color=TXT3).pack(pady=20)
+
+        def fetch():
+            try:
+                r = requests.get(f"{ITUNES}/search", params={"term": album_name, "entity": "song", "limit": 20}, timeout=10)
+                items = r.json().get("results", [])
+                items = [x for x in items if x.get("collectionName","") == album_name]
+            except:
+                items = []
+            self.root.after(0, lambda: self._populate_track_list(sf, items))
+
+        threading.Thread(target=fetch, daemon=True).start()
+
+    def _populate_track_list(self, parent, items):
+        for w in parent.winfo_children():
+            w.destroy()
+        if not items:
+            ctk.CTkLabel(parent, text="No tracks found.", font=("Segoe UI", 12),
+                         text_color=TXT3).pack(pady=20)
+            return
+        for i, s in enumerate(items):
+            title = s.get("trackName", "")
+            aname = s.get("artistName", "")
+            album = s.get("collectionName", "")
+            art = s.get("artworkUrl100", "")
+            r = ctk.CTkFrame(parent, fg_color=CARD, corner_radius=8)
+            r.pack(fill=tk.X, pady=2)
+            r.grid_columnconfigure(1, weight=1)
+            ctk.CTkLabel(r, text=str(i+1), width=28, font=("Segoe UI", 11),
+                         text_color=TXT3).grid(row=0, column=0, rowspan=2, padx=(10, 6))
+            ctk.CTkLabel(r, text=title, font=("Segoe UI", 12, "bold"),
+                         text_color=TXT, anchor="w").grid(row=0, column=1, sticky="w", padx=(0, 8))
+            ctk.CTkLabel(r, text=aname if aname else album, font=("Segoe UI", 10),
+                         text_color=TXT3, anchor="w").grid(row=1, column=1, sticky="w", padx=(0, 8))
+            ctk.CTkButton(r, text="\u25b6", width=30, height=26,
+                          fg_color=GREEN, hover_color="#1aa34a",
+                          text_color="#000000", corner_radius=8,
+                          font=("Segoe UI", 10, "bold"),
+                          command=lambda t=title, a=aname, al=album, au=art:
+                              self._enqueue(t, a, al, au)).grid(row=0, column=2, rowspan=2, padx=(0, 10))
+
+    def _display_suggestions(self, artists, albums, songs):
+        for x in artists:
+            aname = x.get("artistName", "")
+            art = x.get("artworkUrl100", "") or x.get("artworkUrl60", "")
+            genre = x.get("primaryGenreName", "")
+            card = ctk.CTkFrame(self.sa_frame, fg_color=CARD, corner_radius=12, width=160, height=160)
+            card.pack(side=tk.LEFT, padx=6)
+            card.pack_propagate(False)
+            img = None
+            if art:
+                img = self._make_circular(art.replace("100x100", "80x80"), (56, 56))
+            ilbl = ctk.CTkLabel(card, text="", image=img, width=56, height=56,
+                                corner_radius=28) if img else ctk.CTkLabel(card, text="\U0001F3A4", font=("Segoe UI", 24))
+            ilbl.pack(pady=(14, 4))
+            ctk.CTkLabel(card, text=aname[:18], font=("Segoe UI", 11, "bold"),
+                         text_color=TXT).pack()
+            if genre:
+                ctk.CTkLabel(card, text=genre, font=("Segoe UI", 8),
+                             text_color=TXT3).pack()
+            ctk.CTkButton(card, text="View Songs", width=80, height=24,
+                          fg_color=GREEN, hover_color="#1aa34a",
+                          text_color="#000000", corner_radius=10,
+                          font=("Segoe UI", 9, "bold"),
+                          command=lambda a=aname, u=art: self._show_artist_popup(a, u)).pack(pady=(4, 0))
+
+        for x in albums:
+            name = x.get("collectionName", "")
+            aname = x.get("artistName", "")
+            art = x.get("artworkUrl100", "") or x.get("artworkUrl60", "")
+            card = ctk.CTkFrame(self.sal_frame, fg_color=CARD, corner_radius=12, width=160, height=160)
+            card.pack(side=tk.LEFT, padx=6)
+            card.pack_propagate(False)
+            img = None
+            if art:
+                img = fetch_art(art.replace("100x100", "80x80"), (56, 56))
+            ilbl = ctk.CTkLabel(card, text="", image=img, width=56, height=56) if img else ctk.CTkLabel(card, text="\U0001F4BF", font=("Segoe UI", 24))
+            ilbl.pack(pady=(14, 4))
+            ctk.CTkLabel(card, text=name[:20], font=("Segoe UI", 11, "bold"),
+                         text_color=TXT).pack()
+            ctk.CTkLabel(card, text=aname, font=("Segoe UI", 9),
+                         text_color=TXT3).pack()
+            ctk.CTkButton(card, text="View Tracks", width=80, height=24,
+                          fg_color=GREEN, hover_color="#1aa34a",
+                          text_color="#000000", corner_radius=10,
+                          font=("Segoe UI", 9, "bold"),
+                          command=lambda n=name, a=aname, u=art: self._show_album_popup(n, a, u)).pack(pady=(4, 0))
+
+        for x in songs:
+            title = x.get("trackName", "")
+            aname = x.get("artistName", "")
+            album = x.get("collectionName", "")
+            art = x.get("artworkUrl100", "") or x.get("artworkUrl60", "")
+            card = ctk.CTkFrame(self.ss_frame, fg_color=CARD, corner_radius=12, width=160, height=160)
+            card.pack(side=tk.LEFT, padx=6)
+            card.pack_propagate(False)
+            img = None
+            if art:
+                img = fetch_art(art.replace("100x100", "80x80"), (56, 56))
+            ilbl = ctk.CTkLabel(card, text="", image=img, width=56, height=56) if img else ctk.CTkLabel(card, text="\U0001F3B5", font=("Segoe UI", 24))
+            ilbl.pack(pady=(14, 4))
+            ctk.CTkLabel(card, text=title[:18], font=("Segoe UI", 11, "bold"),
+                         text_color=TXT).pack()
+            ctk.CTkLabel(card, text=aname, font=("Segoe UI", 9),
+                         text_color=TXT3).pack()
+            ctk.CTkButton(card, text="\u25b6", width=32, height=26,
+                          fg_color=GREEN, hover_color="#1aa34a",
+                          text_color="#000000", corner_radius=8,
+                          font=("Segoe UI", 10, "bold"),
+                          command=lambda t=title, a=aname, al=album, au=art:
+                              self._enqueue(t, a, al, au)).pack(pady=(4, 0))
+
     def _build_search(self):
         self.search_frame = ctk.CTkFrame(self.content, fg_color="transparent", corner_radius=0)
         self.search_frame.grid(row=0, column=0, sticky="nsew")
@@ -540,7 +813,9 @@ class App:
     def _player_bar(self):
         bar = ctk.CTkFrame(self.root, height=90, corner_radius=0, fg_color="#131a22")
         bar.grid(row=1, column=1, sticky="nsew")
+        bar.grid_propagate(False)
         bar.grid_columnconfigure(1, weight=1)
+        bar.grid_rowconfigure(0, weight=1)
 
         # Left: album art + info
         left = ctk.CTkFrame(bar, fg_color="transparent")
@@ -573,58 +848,55 @@ class App:
                                      font=("Segoe UI", 10), text_color=TXT)
         self.dl_btn.pack(side=tk.LEFT)
 
-        # Center: controls
+        # Center: controls stacked with pack
         center = ctk.CTkFrame(bar, fg_color="transparent")
         center.grid(row=0, column=1, sticky="nsew")
-        center.grid_rowconfigure(0, weight=1)
-        center.grid_rowconfigure(1, weight=0)
-        center.grid_columnconfigure(0, weight=1)
 
-        # Seek bar
+        # Buttons (top of center)
+        btnf = ctk.CTkFrame(center, fg_color="transparent")
+        btnf.pack(side=tk.TOP, pady=(12, 2))
+
+        ctk.CTkButton(btnf, text="\U0001F500", width=28, height=28,
+                      fg_color="transparent", hover_color=HOVER,
+                      font=("Segoe UI", 10), text_color=TXT2, corner_radius=14).pack(side=tk.LEFT, padx=4)
+        self.prv = ctk.CTkButton(btnf, text="\u23ee", width=28, height=28,
+                                  fg_color="transparent", hover_color=HOVER,
+                                  font=("Segoe UI", 12), state=tk.DISABLED,
+                                  text_color=TXT, corner_radius=14,
+                                  command=self._prev)
+        self.prv.pack(side=tk.LEFT, padx=4)
+        self.pp = ctk.CTkButton(btnf, text="\u25b6", width=36, height=36,
+                                 fg_color=TXT, hover_color=TXT2,
+                                 font=("Segoe UI", 15), state=tk.DISABLED,
+                                 text_color="#000000", corner_radius=18,
+                                 command=self._toggle)
+        self.pp.pack(side=tk.LEFT, padx=6)
+        self.nxt = ctk.CTkButton(btnf, text="\u23ed", width=28, height=28,
+                                  fg_color="transparent", hover_color=HOVER,
+                                  font=("Segoe UI", 12), state=tk.DISABLED,
+                                  text_color=TXT, corner_radius=14,
+                                  command=self._next)
+        self.nxt.pack(side=tk.LEFT, padx=4)
+        ctk.CTkButton(btnf, text="\U0001F501", width=28, height=28,
+                      fg_color="transparent", hover_color=HOVER,
+                      font=("Segoe UI", 10), text_color=TXT2, corner_radius=14).pack(side=tk.LEFT, padx=4)
+
+        # Seek bar (below buttons)
         seekf = ctk.CTkFrame(center, fg_color="transparent")
-        seekf.grid(row=0, column=0, sticky="sew", padx=40, pady=(6, 0))
+        seekf.pack(side=tk.BOTTOM, fill=tk.X, padx=40, pady=(0, 6))
         seekf.grid_columnconfigure(1, weight=1)
 
-        self.tl_start = ctk.CTkLabel(seekf, text="0:00", font=("Segoe UI", 10), text_color=TXT3)
-        self.tl_start.grid(row=0, column=0, padx=(0, 8))
+        self.tl_start = ctk.CTkLabel(seekf, text="0:00", font=("Segoe UI", 9), text_color=TXT3)
+        self.tl_start.grid(row=0, column=0, padx=(0, 6))
 
         self.sk = ctk.CTkSlider(seekf, from_=0, to=1000, height=4,
-                                 button_length=12, fg_color=ELEV,
+                                 button_length=10, fg_color=ELEV,
                                  progress_color=GREEN, button_color=GREEN,
                                  command=self._seek_drag)
         self.sk.grid(row=0, column=1, sticky="ew")
 
-        self.tl_end = ctk.CTkLabel(seekf, text="0:00", font=("Segoe UI", 10), text_color=TXT3)
-        self.tl_end.grid(row=0, column=2, padx=(8, 0))
-
-        # Buttons
-        btnf = ctk.CTkFrame(center, fg_color="transparent")
-        btnf.grid(row=1, column=0, sticky="n", pady=(4, 10))
-
-        ctk.CTkButton(btnf, text="\U0001F500", width=30, height=30,
-                      fg_color="transparent", hover_color=HOVER,
-                      font=("Segoe UI", 11), text_color=TXT2, corner_radius=15).pack(side=tk.LEFT, padx=4)
-        self.prv = ctk.CTkButton(btnf, text="\u23ee", width=30, height=30,
-                                  fg_color="transparent", hover_color=HOVER,
-                                  font=("Segoe UI", 14), state=tk.DISABLED,
-                                  text_color=TXT, corner_radius=15,
-                                  command=self._prev)
-        self.prv.pack(side=tk.LEFT, padx=4)
-        self.pp = ctk.CTkButton(btnf, text="\u25b6", width=38, height=38,
-                                 fg_color=TXT, hover_color=TXT2,
-                                 font=("Segoe UI", 16), state=tk.DISABLED,
-                                 text_color="#000000", corner_radius=19,
-                                 command=self._toggle)
-        self.pp.pack(side=tk.LEFT, padx=6)
-        self.nxt = ctk.CTkButton(btnf, text="\u23ed", width=30, height=30,
-                                  fg_color="transparent", hover_color=HOVER,
-                                  font=("Segoe UI", 14), state=tk.DISABLED,
-                                  text_color=TXT, corner_radius=15,
-                                  command=self._next)
-        self.nxt.pack(side=tk.LEFT, padx=4)
-        ctk.CTkButton(btnf, text="\U0001F501", width=30, height=30,
-                      fg_color="transparent", hover_color=HOVER,
-                      font=("Segoe UI", 11), text_color=TXT2, corner_radius=15).pack(side=tk.LEFT, padx=4)
+        self.tl_end = ctk.CTkLabel(seekf, text="0:00", font=("Segoe UI", 9), text_color=TXT3)
+        self.tl_end.grid(row=0, column=2, padx=(6, 0))
 
         # Right: volume
         right = ctk.CTkFrame(bar, fg_color="transparent")
@@ -656,30 +928,21 @@ class App:
         if idx == 0:
             self.home_frame.grid()
             self.current_page = "home"
+            self._refresh_suggestions()
         elif idx == 1:
             self.search_frame.grid()
             self.current_page = "search"
         elif idx == 2:
-            # Live Streams — reuse home frame but could scroll to streams
             self.home_frame.grid()
             self.current_page = "home"
+            self._refresh_suggestions()
         elif idx == 3:
-            # Library — reuse search
             self.search_frame.grid()
             self.current_page = "search"
-        elif idx == 4:
-            # Favorites — home for now
+        elif idx in (4, 5, 6, 7):
             self.home_frame.grid()
             self.current_page = "home"
-        elif idx == 5:
-            self.home_frame.grid()
-            self.current_page = "home"
-        elif idx == 6:
-            self.home_frame.grid()
-            self.current_page = "home"
-        elif idx == 7:
-            self.home_frame.grid()
-            self.current_page = "home"
+            self._refresh_suggestions()
 
     def _show_search(self):
         q = self.e.get().strip()
@@ -1054,6 +1317,16 @@ class App:
             self.nxt.configure(state=tk.DISABLED)
             self.dl_btn.configure(state=tk.DISABLED)
 
+    def _log_play(self, item):
+        if not self.profile_id:
+            return
+        try:
+            self.db.execute("INSERT INTO listening_history (profile_id, title, artist, album, art_url) VALUES (?,?,?,?,?)",
+                            (self.profile_id, item.title, item.artist, item.album or "", item.art_url or ""))
+            self.db.commit()
+        except:
+            pass
+
     def _play_vlc(self, url):
         try:
             player.stop()
@@ -1066,6 +1339,8 @@ class App:
             self.queue_lb.selection_clear(0, tk.END)
             self.queue_lb.selection_set(self.qidx)
             self.queue_lb.see(self.qidx)
+            if self.now_playing:
+                self._log_play(self.now_playing)
         except Exception as e:
             self._err(str(e))
 
@@ -1330,7 +1605,7 @@ class App:
             self.profile_id = row[0]
             self.profile_languages = json.loads(row[1]) if row[1] else []
             self.profile_artists = json.loads(row[2]) if row[2] else []
-            self.root.after(100, self._refresh_home_mixes)
+            self.root.after(100, lambda: (self._refresh_home_mixes(), self._refresh_suggestions()))
         else:
             self.root.after(500, self._onboarding_wizard)
 
@@ -1623,7 +1898,7 @@ class App:
 
         def generate():
             self._generate_playlists()
-            self.root.after(0, lambda: (gen.destroy(), self._refresh_sidebar_playlists(), self._refresh_home_mixes()))
+            self.root.after(0, lambda: (gen.destroy(), self._refresh_sidebar_playlists(), self._refresh_home_mixes(), self._refresh_suggestions()))
 
         threading.Thread(target=generate, daemon=True).start()
 
