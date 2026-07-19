@@ -2075,13 +2075,22 @@ class App:
                     conn.execute("INSERT INTO playlist_tracks (playlist_id, title, artist, album, art_url, position) VALUES (?,?,?,?,?,?)",
                                  (pl_id, t, a, al or "", au or "", i))
 
-            # 3. Daily Mix: top genres + top affinity artists
+            # 3. Daily Mix: top genres + top affinity artists (with fallback)
             taste = conn.execute(
                 "SELECT genre FROM taste_profile WHERE profile_id=? ORDER BY percentage DESC LIMIT 2",
                 (pid,)).fetchall()
             top_artists = conn.execute(
                 "SELECT artist_name FROM artist_affinity WHERE profile_id=? ORDER BY affinity_score DESC LIMIT 3",
                 (pid,)).fetchall()
+            # Fallback: if no taste profile yet, derive from fav artists
+            if not taste and self.profile_artists:
+                for a in self.profile_artists[:3]:
+                    g = self._get_artist_genre(a)
+                    if g:
+                        taste = [(g,)]
+                        break
+            if not top_artists and self.profile_artists:
+                top_artists = [(a,) for a in self.profile_artists[:3]]
             daily_songs = []
             seen = set()
             for (genre,) in taste:
