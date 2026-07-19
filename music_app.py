@@ -89,6 +89,12 @@ def init_db():
         FOREIGN KEY(profile_id) REFERENCES profiles(id),
         UNIQUE(profile_id, genre)
     )""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS recommendation_history (
+        id INTEGER PRIMARY KEY, profile_id INTEGER,
+        rec_type TEXT, item_key TEXT, item_name TEXT,
+        recommended_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY(profile_id) REFERENCES profiles(id)
+    )""")
     # Migration: add columns to artist_affinity
     for col, typ in [("skip_count", "INTEGER DEFAULT 0")]:
         try:
@@ -569,6 +575,25 @@ class App:
             pid = self.profile_id
             favs = self.profile_artists[:5]
 
+            # Read recommendation history (last 7 days) to avoid repeat recs
+            recent_recs_artists = set()
+            recent_recs_songs = set()
+            recent_recs_albums = set()
+            try:
+                rec_rows = c.execute("""
+                    SELECT rec_type, item_key FROM recommendation_history
+                    WHERE profile_id=? AND recommended_at >= datetime('now', '-7 days')
+                """, (pid,)).fetchall()
+                for rtype, key in rec_rows:
+                    if rtype == 'artist':
+                        recent_recs_artists.add(key)
+                    elif rtype == 'song':
+                        recent_recs_songs.add(key)
+                    elif rtype == 'album':
+                        recent_recs_albums.add(key)
+            except:
+                pass
+
             # Get taste profile from DB (genre percentages)
             taste = c.execute(
                 "SELECT genre, percentage FROM taste_profile WHERE profile_id=? ORDER BY percentage DESC LIMIT 4",
@@ -638,6 +663,7 @@ class App:
 
             # Get top affinity artists
             played_heavy = set()
+            aff_rows = []
             try:
                 conn2 = sqlite3.connect(DB_PATH)
                 aff_rows = conn2.execute(
@@ -649,15 +675,15 @@ class App:
             except:
                 pass
 
-            # 1. Suggested Artists
+            # 1. Suggested Artists (diversity: exclude recent recs)
             artists_result = []
             seen_artists = set(favs) | played_heavy
             for genre in top_genres[:2]:
                 try:
-                    r = requests.get(f"{ITUNES}/search", params={"term": genre, "entity": "musicArtist", "limit": 6}, timeout=8)
+                    r = requests.get(f"{ITUNES}/search", params={"term": genre, "entity": "musicArtist", "limit": 8}, timeout=8)
                     for x in r.json().get("results", []):
                         aname = x["artistName"]
-                        if aname not in seen_artists:
+                        if aname not in seen_artists and aname not in recent_recs_artists:
                             seen_artists.add(aname)
                             artists_result.append(x)
                 except:
@@ -672,7 +698,8 @@ class App:
                     r = requests.get(f"{ITUNES}/search", params={"term": a, "entity": "album", "limit": 4}, timeout=8)
                     for x in r.json().get("results", []):
                         name = x.get("collectionName", "")
-                        if name and name not in seen_albums:
+                        al_key = f"{name}||{x.get('artistName','')}"
+                        if name and name not in seen_albums and al_key not in recent_recs_albums:
                             seen_albums.add(name)
                             albums_result.append(x)
                 except:
@@ -691,14 +718,25 @@ class App:
 
             songs_result = []
             seen_songs = set()
+            artist_song_count = {}  # diversity: max 2 songs per artist
+            def _ok_song(tn, an, db_key):
+                if db_key in heard_songs or db_key in recent_recs_songs:
+                    return False
+                if (tn, an) in seen_songs:
+                    return False
+                if artist_song_count.get(an, 0) >= 2:
+                    return False
+                return True
             for genre in top_genres[:2]:
                 try:
                     r = requests.get(f"{ITUNES}/search", params={"term": genre, "entity": "song", "limit": 8}, timeout=8)
                     for x in r.json().get("results", []):
-                        key = (x.get("trackName", ""), x.get("artistName", ""))
-                        db_key = f"{x.get('trackName','')}||{x.get('artistName','')}"
-                        if key not in seen_songs and db_key not in heard_songs:
-                            seen_songs.add(key)
+                        tn = x.get("trackName", "")
+                        an = x.get("artistName", "")
+                        db_key = f"{tn}||{an}"
+                        if _ok_song(tn, an, db_key):
+                            seen_songs.add((tn, an))
+                            artist_song_count[an] = artist_song_count.get(an, 0) + 1
                             songs_result.append(x)
                 except:
                     pass
@@ -706,16 +744,42 @@ class App:
                 try:
                     r = requests.get(f"{ITUNES}/search", params={"term": a, "entity": "song", "limit": 4}, timeout=8)
                     for x in r.json().get("results", []):
-                        db_key = f"{x.get('trackName','')}||{x.get('artistName','')}"
-                        if db_key not in heard_songs:
+                        tn = x.get("trackName", "")
+                        an = x.get("artistName", "")
+                        db_key = f"{tn}||{an}"
+                        if _ok_song(tn, an, db_key):
+                            seen_songs.add((tn, an))
+                            artist_song_count[an] = artist_song_count.get(an, 0) + 1
                             songs_result.append(x)
                 except:
                     pass
             for cs in collab_songs:
                 title, artist = cs.get("title", ""), cs.get("artist", "")
-                if title and artist and f"{title}||{artist}" not in heard_songs:
+                db_key = f"{title}||{artist}"
+                if _ok_song(title, artist, db_key):
+                    seen_songs.add((title, artist))
+                    artist_song_count[artist] = artist_song_count.get(artist, 0) + 1
                     songs_result.append({"trackName": title, "artistName": artist,
                                          "collectionName": "", "artworkUrl100": ""})
+
+            # Save recommendation history (async)
+            def _save_recs():
+                try:
+                    rc = sqlite3.connect(DB_PATH)
+                    for x in artists_result[:8]:
+                        rc.execute("INSERT OR IGNORE INTO recommendation_history (profile_id, rec_type, item_key, item_name) VALUES (?,?,?,?)",
+                                   (pid, 'artist', x.get("artistName",""), x.get("artistName","")))
+                    for x in albums_result[:8]:
+                        rc.execute("INSERT OR IGNORE INTO recommendation_history (profile_id, rec_type, item_key, item_name) VALUES (?,?,?,?)",
+                                   (pid, 'album', f"{x.get('collectionName','')}||{x.get('artistName','')}", x.get("collectionName","")))
+                    for x in songs_result:
+                        rc.execute("INSERT OR IGNORE INTO recommendation_history (profile_id, rec_type, item_key, item_name) VALUES (?,?,?,?)",
+                                   (pid, 'song', f"{x.get('trackName','')}||{x.get('artistName','')}", x.get("trackName","")))
+                    rc.commit()
+                    rc.close()
+                except:
+                    pass
+            threading.Thread(target=_save_recs, daemon=True).start()
 
             self.root.after(0, self._display_suggestions, artists_result[:8], albums_result[:8], songs_result[:12])
 
@@ -1155,6 +1219,38 @@ class App:
     def _search(self, q):
         rows = []
         seen = set()
+        # Load user personalization data
+        fav_artists = set(getattr(self, 'profile_artists', []))
+        aff_artists = set()
+        heard_songs = set()
+        taste_genres = set()
+        if self.profile_id:
+            try:
+                pc = sqlite3.connect(DB_PATH)
+                for (an,) in pc.execute(
+                    "SELECT artist_name FROM artist_affinity WHERE profile_id=? AND affinity_score>10 ORDER BY affinity_score DESC LIMIT 20",
+                    (self.profile_id,)).fetchall():
+                    aff_artists.add(an)
+                for (key,) in pc.execute(
+                    "SELECT DISTINCT title||'||'||artist FROM listening_history WHERE profile_id=?", (self.profile_id,)).fetchall():
+                    heard_songs.add(key)
+                for (g,) in pc.execute(
+                    "SELECT genre FROM taste_profile WHERE profile_id=? AND percentage>5", (self.profile_id,)).fetchall():
+                    taste_genres.add(g)
+                pc.close()
+            except:
+                pass
+        # Score storage for sorting
+        score_map = {}  # iid -> score
+        def _score_track(tn, an, tag):
+            s = 0
+            if an in fav_artists:
+                s += 10
+            elif an in aff_artists:
+                s += 5
+            if f"{tn}||{an}" in heard_songs:
+                s += 3
+            return s
         try:
             r = requests.get(f"{ITUNES}/search", params={"term": q, "entity": "musicArtist", "limit": 5}, timeout=10)
             for x in r.json().get("results", []):
@@ -1163,6 +1259,8 @@ class App:
                     seen.add(aid)
                     aname = x["artistName"]
                     aid_raw = str(x["artistId"])
+                    sc = 10 if aname in fav_artists else (5 if aname in aff_artists else 0)
+                    score_map[aid] = sc
                     rows.append(("", aid, "", (aname, "Artist", ""), ("artist", aid_raw)))
                     try:
                         rs = requests.get(f"{ITUNES}/search", params={"term": aname, "entity": "song", "limit": 20}, timeout=10)
@@ -1175,6 +1273,8 @@ class App:
                                     m, sec = divmod(dur, 60)
                                     art = s.get("artworkUrl100", "")
                                     track_data[tid] = (s["trackName"], s["artistName"], str(s.get("collectionId","")), art)
+                                    sc = _score_track(s["trackName"], s["artistName"], tid)
+                                    score_map[tid] = sc
                                     rows.append((aid, tid, "", (s["trackName"], "Track", f"{m}:{sec:02d}"), ("track", tid)))
                     except:
                         pass
@@ -1186,8 +1286,11 @@ class App:
                 alid = f"al_{x['collectionId']}"
                 if alid not in seen:
                     seen.add(alid)
+                    aname = x.get("artistName","")
+                    sc = 10 if aname in fav_artists else (5 if aname in aff_artists else 0)
+                    score_map[alid] = sc
                     p = f"a_{x['artistId']}" if f"a_{x['artistId']}" in seen else ""
-                    rows.append((p, alid, "", (x["collectionName"], "Album", x.get("artistName","")), ("album", str(x["collectionId"]))))
+                    rows.append((p, alid, "", (x["collectionName"], "Album", aname), ("album", str(x["collectionId"]))))
         except:
             pass
         try:
@@ -1198,12 +1301,26 @@ class App:
                     seen.add(tid)
                     dur = x.get("trackTimeMillis", 0) // 1000
                     m, s = divmod(dur, 60)
+                    aname = x.get("artistName","")
+                    tn = x.get("trackName","")
                     p = f"al_{x['collectionId']}" if f"al_{x['collectionId']}" in seen else ""
                     art = x.get("artworkUrl100", "")
-                    track_data[tid] = (x["trackName"], x["artistName"], str(x.get("collectionId","")), art)
-                    rows.append((p, tid, "", (x["trackName"], "Track", f"{x['artistName']} \u00b7 {m}:{s:02d}"), ("track", tid)))
+                    track_data[tid] = (tn, aname, str(x.get("collectionId","")), art)
+                    sc = _score_track(tn, aname, tid)
+                    score_map[tid] = sc
+                    rows.append((p, tid, "", (tn, "Track", f"{aname} \u00b7 {m}:{s:02d}"), ("track", tid)))
         except:
             pass
+        # Sort: top-scored items first, track children stay under parents
+        def sort_key(row):
+            parent = row[0]
+            iid = row[1]
+            sc = score_map.get(iid, 0)
+            # Artists/albums at top, then tracks sorted by score
+            tag = row[4][0] if len(row) > 4 else ""
+            priority = 0 if tag in ("artist", "album") else 1
+            return (-sc, priority, row[3][0] if row[3] else "")
+        rows.sort(key=sort_key)
         self.root.after(0, self._show, rows)
 
     def _show(self, rows):
@@ -1233,6 +1350,22 @@ class App:
         rows = []
         seen = set()
         track_data.clear()
+        # Load personalization data
+        fav_artists = set(getattr(self, 'profile_artists', []))
+        aff_artists = set()
+        if self.profile_id:
+            try:
+                pc = sqlite3.connect(DB_PATH)
+                for (an,) in pc.execute(
+                    "SELECT artist_name FROM artist_affinity WHERE profile_id=? AND affinity_score>10 ORDER BY affinity_score DESC LIMIT 20",
+                    (self.profile_id,)).fetchall():
+                    aff_artists.add(an)
+                pc.close()
+            except:
+                pass
+        score_map = {}
+        def _sc(aname):
+            return 10 if aname in fav_artists else (5 if aname in aff_artists else 0)
         entity_map = {"Songs": "song", "Artists": "musicArtist", "Albums": "album"}
         entity = entity_map.get(filt, "song")
         limit_map = {"Songs": 200, "Artists": 10, "Albums": 200}
@@ -1244,7 +1377,9 @@ class App:
                     aid = f"a_{x['artistId']}"
                     if aid not in seen:
                         seen.add(aid)
-                        rows.append(("", aid, "", (x["artistName"], "Artist", ""), ("artist", str(x["artistId"]))))
+                        aname = x["artistName"]
+                        score_map[aid] = _sc(aname)
+                        rows.append(("", aid, "", (aname, "Artist", ""), ("artist", str(x["artistId"]))))
             elif entity == "song":
                 originals, collabs, remixes = [], [], []
                 ql = q.lower()
@@ -1256,15 +1391,21 @@ class App:
                     dur = x.get("trackTimeMillis", 0) // 1000
                     m, s_div = divmod(dur, 60)
                     art = x.get("artworkUrl100", "")
-                    track_data[tid] = (x["trackName"], x["artistName"], str(x.get("collectionId","")), art)
-                    entry = (tid, x["trackName"], x["artistName"], f"{m}:{s_div:02d}")
+                    aname = x["artistName"]
+                    track_data[tid] = (x["trackName"], aname, str(x.get("collectionId","")), art)
+                    score_map[tid] = _sc(aname)
+                    entry = (tid, x["trackName"], aname, f"{m}:{s_div:02d}")
                     title_lower = x["trackName"].lower()
                     if "remix" in title_lower:
                         remixes.append(entry)
-                    elif x["artistName"].lower() != ql:
+                    elif aname.lower() != ql:
                         collabs.append(entry)
                     else:
                         originals.append(entry)
+                # Sort each section by personalization score
+                originals.sort(key=lambda e: -score_map.get(e[0], 0))
+                collabs.sort(key=lambda e: -score_map.get(e[0], 0))
+                remixes.sort(key=lambda e: -score_map.get(e[0], 0))
                 if originals:
                     rows.append(("", "_sec_originals", "", ("Songs", "", ""), ("label", "")))
                     for tid, tn, an, dur in originals:
@@ -1286,12 +1427,15 @@ class App:
                         continue
                     seen.add(alid)
                     an = x.get("artistName", "")
+                    score_map[alid] = _sc(an)
                     cid = str(x["collectionId"])
                     entry = (alid, x["collectionName"], an, f"{x.get('trackCount',0)} tracks", cid)
                     if an.lower() == ql:
                         albums_list.append(entry)
                     else:
                         appearances.append(entry)
+                albums_list.sort(key=lambda e: -score_map.get(e[0], 0))
+                appearances.sort(key=lambda e: -score_map.get(e[0], 0))
                 if albums_list:
                     rows.append(("", "_sec_albums", "", ("Albums", "", ""), ("label", "")))
                     for alid, cn, an, tc, cid in albums_list:
@@ -1902,9 +2046,37 @@ class App:
             conn = sqlite3.connect(DB_PATH)
             c = conn.cursor()
             pid = self.profile_id
+            # Recency weighting: recent plays count more
             rows = c.execute("""
-                SELECT artist, COUNT(*), SUM(completed), SUM(skipped),
-                       SUM(play_duration)
+                SELECT artist,
+                    SUM(CASE
+                        WHEN played_at >= datetime('now', '-7 days') THEN 1.0
+                        WHEN played_at >= datetime('now', '-30 days') THEN 0.8
+                        WHEN played_at >= datetime('now', '-90 days') THEN 0.6
+                        WHEN played_at >= datetime('now', '-365 days') THEN 0.3
+                        ELSE 0.1
+                    END) as weighted_count,
+                    SUM(completed * CASE
+                        WHEN played_at >= datetime('now', '-7 days') THEN 1.0
+                        WHEN played_at >= datetime('now', '-30 days') THEN 0.8
+                        WHEN played_at >= datetime('now', '-90 days') THEN 0.6
+                        WHEN played_at >= datetime('now', '-365 days') THEN 0.3
+                        ELSE 0.1
+                    END) as weighted_completed,
+                    SUM(skipped * CASE
+                        WHEN played_at >= datetime('now', '-7 days') THEN 1.0
+                        WHEN played_at >= datetime('now', '-30 days') THEN 0.8
+                        WHEN played_at >= datetime('now', '-90 days') THEN 0.6
+                        WHEN played_at >= datetime('now', '-365 days') THEN 0.3
+                        ELSE 0.1
+                    END) as weighted_skipped,
+                    SUM(play_duration * CASE
+                        WHEN played_at >= datetime('now', '-7 days') THEN 1.0
+                        WHEN played_at >= datetime('now', '-30 days') THEN 0.8
+                        WHEN played_at >= datetime('now', '-90 days') THEN 0.6
+                        WHEN played_at >= datetime('now', '-365 days') THEN 0.3
+                        ELSE 0.1
+                    END) as weighted_duration
                 FROM listening_history WHERE profile_id=?
                 GROUP BY artist
             """, (pid,)).fetchall()
