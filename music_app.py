@@ -67,6 +67,34 @@ def init_db():
         played_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY(profile_id) REFERENCES profiles(id)
     )""")
+    # Migrate: add new columns to listening_history
+    for col, typ in [("play_duration", "REAL DEFAULT 0"), ("song_duration", "REAL DEFAULT 0"),
+                     ("completed", "INTEGER DEFAULT 0"), ("skipped", "INTEGER DEFAULT 0")]:
+        try:
+            conn.execute(f"ALTER TABLE listening_history ADD COLUMN {col} {typ}")
+        except:
+            pass
+    conn.execute("""CREATE TABLE IF NOT EXISTS artist_affinity (
+        id INTEGER PRIMARY KEY, profile_id INTEGER, artist_name TEXT,
+        play_count INTEGER DEFAULT 0, fav_count INTEGER DEFAULT 0,
+        download_count INTEGER DEFAULT 0, playlist_add_count INTEGER DEFAULT 0,
+        completed_count INTEGER DEFAULT 0, skip_count INTEGER DEFAULT 0,
+        affinity_score REAL DEFAULT 0, last_updated TIMESTAMP,
+        FOREIGN KEY(profile_id) REFERENCES profiles(id),
+        UNIQUE(profile_id, artist_name)
+    )""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS taste_profile (
+        id INTEGER PRIMARY KEY, profile_id INTEGER, genre TEXT,
+        percentage REAL DEFAULT 0, last_updated TIMESTAMP,
+        FOREIGN KEY(profile_id) REFERENCES profiles(id),
+        UNIQUE(profile_id, genre)
+    )""")
+    # Migration: add columns to artist_affinity
+    for col, typ in [("skip_count", "INTEGER DEFAULT 0")]:
+        try:
+            conn.execute(f"ALTER TABLE artist_affinity ADD COLUMN {col} {typ}")
+        except:
+            pass
     conn.commit()
     return conn
 
@@ -122,11 +150,13 @@ class App:
         self.now_playing = None
         self.db = init_db()
         self.profile_id = None
+        self._genre_cache = {}
         self._check_onboarding()
 
         self._ui()
         self._bind()
         self._tick()
+        self._auto_playlist_timer()
         self.root.protocol("WM_DELETE_WINDOW", self._close)
 
     def _ui(self):
@@ -534,55 +564,112 @@ class App:
             return
 
         def fetch():
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            pid = self.profile_id
             favs = self.profile_artists[:5]
-            genres = []
 
-            # Collect genres from favorite artists
-            for a in favs:
-                try:
-                    r = requests.get(f"{ITUNES}/search", params={"term": a, "entity": "song", "limit": 2}, timeout=8)
-                    for s in r.json().get("results", []):
-                        g = s.get("primaryGenreName", "")
-                        if g:
-                            genres.append(g)
-                except:
-                    pass
+            # Get taste profile from DB (genre percentages)
+            taste = c.execute(
+                "SELECT genre, percentage FROM taste_profile WHERE profile_id=? ORDER BY percentage DESC LIMIT 4",
+                (pid,)).fetchall()
+            top_genres = [r[0] for r in taste] if taste else []
+            if not top_genres:
+                for a in favs:
+                    g = self._get_artist_genre(a)
+                    if g and g not in top_genres:
+                        top_genres.append(g)
+            if not top_genres:
+                top_genres = ["Pop"]
 
-            # Also collect genres from listening history
+            # Time-of-day and adjacent genre (use cached methods but pass conn)
+            tod_raw = c.execute(
+                "SELECT DISTINCT lh.artist FROM listening_history lh WHERE lh.profile_id=? ORDER BY lh.id DESC LIMIT 10",
+                (pid,)).fetchall()
+            tod_genres = []
+            for (artist,) in tod_raw:
+                g = self._get_artist_genre(artist)
+                if g:
+                    tod_genres.append(g)
+            if tod_genres:
+                tg = max(set(tod_genres), key=tod_genres.count)
+                if tg in top_genres:
+                    top_genres.remove(tg)
+                    top_genres.insert(0, tg)
+
+            # Genre exploration
+            if top_genres:
+                adjacent = self._adjacent_genres(top_genres[0])
+                for ag in adjacent[:2]:
+                    if ag not in top_genres:
+                        top_genres.append(ag)
+                        break
+
+            # Collaborative filtering
+            my_set = set()
+            my_rows = c.execute(
+                "SELECT DISTINCT title, artist FROM listening_history WHERE profile_id=?", (pid,)).fetchall()
+            for t, a in my_rows:
+                my_set.add(f"{t}||{a}")
+            collab_songs = []
+            if len(my_set) >= 3:
+                others = c.execute(
+                    "SELECT DISTINCT profile_id FROM listening_history WHERE profile_id != ?", (pid,)).fetchall()
+                sims = []
+                for (uid,) in others:
+                    their_rows = c.execute(
+                        "SELECT DISTINCT title, artist FROM listening_history WHERE profile_id=?", (uid,)).fetchall()
+                    their_set = set(f"{t}||{a}" for t, a in their_rows)
+                    inter = len(my_set & their_set)
+                    union = len(my_set | their_set)
+                    if union > 0 and inter / union > 0.1:
+                        sims.append((inter / union, their_set))
+                sims.sort(key=lambda x: -x[0])
+                for _, their_set in sims[:3]:
+                    for key in their_set:
+                        if key not in my_set:
+                            parts = key.split("||")
+                            collab_songs.append({"title": parts[0], "artist": parts[1] if len(parts) > 1 else ""})
+                            if len(collab_songs) >= 5:
+                                break
+                    if len(collab_songs) >= 5:
+                        break
+            conn.close()
+
+            # Get top affinity artists
+            played_heavy = set()
             try:
-                c = self.db.execute(
-                    "SELECT DISTINCT artist FROM listening_history WHERE profile_id=? ORDER BY id DESC LIMIT 10",
-                    (self.profile_id,))
-                for row in c.fetchall():
-                    try:
-                        r = requests.get(f"{ITUNES}/search", params={"term": row[0], "entity": "song", "limit": 1}, timeout=5)
-                        for s in r.json().get("results", []):
-                            g = s.get("primaryGenreName", "")
-                            if g:
-                                genres.append(g)
-                    except:
-                        pass
+                conn2 = sqlite3.connect(DB_PATH)
+                aff_rows = conn2.execute(
+                    "SELECT artist_name FROM artist_affinity WHERE profile_id=? ORDER BY affinity_score DESC LIMIT 10",
+                    (pid,)).fetchall()
+                conn2.close()
+                for (an,) in aff_rows:
+                    played_heavy.add(an)
             except:
                 pass
-
-            top_genre = max(set(genres), key=genres.count) if genres else "Pop"
 
             # 1. Suggested Artists
             artists_result = []
-            try:
-                r = requests.get(f"{ITUNES}/search", params={"term": top_genre, "entity": "musicArtist", "limit": 8}, timeout=8)
-                for x in r.json().get("results", []):
-                    if x["artistName"] not in favs:
-                        artists_result.append(x)
-            except:
-                pass
+            seen_artists = set(favs) | played_heavy
+            for genre in top_genres[:2]:
+                try:
+                    r = requests.get(f"{ITUNES}/search", params={"term": genre, "entity": "musicArtist", "limit": 6}, timeout=8)
+                    for x in r.json().get("results", []):
+                        aname = x["artistName"]
+                        if aname not in seen_artists:
+                            seen_artists.add(aname)
+                            artists_result.append(x)
+                except:
+                    pass
 
             # 2. Suggested Albums
             albums_result = []
             seen_albums = set()
-            for a in favs[:3]:
+            album_artists = [r[0] for r in aff_rows[:4]] if aff_rows else favs[:3]
+            for a in album_artists:
                 try:
-                    r = requests.get(f"{ITUNES}/search", params={"term": a, "entity": "album", "limit": 5}, timeout=8)
+                    r = requests.get(f"{ITUNES}/search", params={"term": a, "entity": "album", "limit": 4}, timeout=8)
                     for x in r.json().get("results", []):
                         name = x.get("collectionName", "")
                         if name and name not in seen_albums:
@@ -592,19 +679,45 @@ class App:
                     pass
 
             # 3. Suggested Songs
-            songs_result = []
-            seen_songs = set()
+            heard_songs = set()
             try:
-                r = requests.get(f"{ITUNES}/search", params={"term": top_genre, "entity": "song", "limit": 10}, timeout=8)
-                for x in r.json().get("results", []):
-                    key = (x.get("trackName", ""), x.get("artistName", ""))
-                    if key not in seen_songs:
-                        seen_songs.add(key)
-                        songs_result.append(x)
+                conn3 = sqlite3.connect(DB_PATH)
+                for (key,) in conn3.execute(
+                    "SELECT DISTINCT title || '||' || artist FROM listening_history WHERE profile_id=?", (pid,)):
+                    heard_songs.add(key)
+                conn3.close()
             except:
                 pass
 
-            self.root.after(0, self._display_suggestions, artists_result, albums_result, songs_result)
+            songs_result = []
+            seen_songs = set()
+            for genre in top_genres[:2]:
+                try:
+                    r = requests.get(f"{ITUNES}/search", params={"term": genre, "entity": "song", "limit": 8}, timeout=8)
+                    for x in r.json().get("results", []):
+                        key = (x.get("trackName", ""), x.get("artistName", ""))
+                        db_key = f"{x.get('trackName','')}||{x.get('artistName','')}"
+                        if key not in seen_songs and db_key not in heard_songs:
+                            seen_songs.add(key)
+                            songs_result.append(x)
+                except:
+                    pass
+            for a in [r[0] for r in aff_rows[:3]]:
+                try:
+                    r = requests.get(f"{ITUNES}/search", params={"term": a, "entity": "song", "limit": 4}, timeout=8)
+                    for x in r.json().get("results", []):
+                        db_key = f"{x.get('trackName','')}||{x.get('artistName','')}"
+                        if db_key not in heard_songs:
+                            songs_result.append(x)
+                except:
+                    pass
+            for cs in collab_songs:
+                title, artist = cs.get("title", ""), cs.get("artist", "")
+                if title and artist and f"{title}||{artist}" not in heard_songs:
+                    songs_result.append({"trackName": title, "artistName": artist,
+                                         "collectionName": "", "artworkUrl100": ""})
+
+            self.root.after(0, self._display_suggestions, artists_result[:8], albums_result[:8], songs_result[:12])
 
         threading.Thread(target=fetch, daemon=True).start()
 
@@ -681,9 +794,35 @@ class App:
                           text_color="#000000", corner_radius=8,
                           font=("Segoe UI", 10, "bold"),
                           command=lambda t=title, a=aname, al=album, au=art:
-                              self._enqueue(t, a, al, au)).grid(row=0, column=2, rowspan=2, padx=(0, 10))
+                              self._enqueue(t, a, al, au)).grid(row=0, column=2, rowspan=2, padx=(0, 4))
+            ctk.CTkButton(r, text="\u2139", width=24, height=24,
+                          fg_color="transparent", hover_color=HOVER,
+                          text_color=TXT3, corner_radius=6,
+                          font=("Segoe UI", 9),
+                          command=lambda t=title, a=aname: self._show_similar_songs_popup(t, a)).grid(row=0, column=3, rowspan=2, padx=(0, 10))
+
+    def _show_similar_songs_popup(self, title, artist):
+        win = ctk.CTkToplevel(self.root)
+        win.title(f"Similar to {title}")
+        win.geometry("500x400")
+        win.transient(self.root)
+        win.grab_set()
+        ctk.CTkLabel(win, text=f"Similar to \"{title}\" by {artist}",
+                     font=("Segoe UI", 15, "bold"), text_color=TXT).pack(pady=(14, 8))
+        sf = ctk.CTkScrollableFrame(win, fg_color="transparent")
+        sf.pack(fill=tk.BOTH, expand=True, padx=16, pady=(0, 12))
+        ctk.CTkLabel(sf, text="Loading...", font=("Segoe UI", 12), text_color=TXT3).pack(pady=20)
+
+        def fetch():
+            similar = self._find_similar_songs(title, artist)
+            self.root.after(0, lambda: self._populate_track_list(sf, similar))
+
+        threading.Thread(target=fetch, daemon=True).start()
 
     def _display_suggestions(self, artists, albums, songs):
+        if not artists:
+            ctk.CTkLabel(self.sa_frame, text="No suggestions yet \u2014 listen to more music!",
+                         font=("Segoe UI", 11), text_color=TXT3).pack(pady=16)
         for x in artists:
             aname = x.get("artistName", "")
             art = x.get("artworkUrl100", "") or x.get("artworkUrl60", "")
@@ -708,6 +847,9 @@ class App:
                           font=("Segoe UI", 9, "bold"),
                           command=lambda a=aname, u=art: self._show_artist_popup(a, u)).pack(pady=(4, 0))
 
+        if not albums:
+            ctk.CTkLabel(self.sal_frame, text="No suggestions yet \u2014 listen to more music!",
+                         font=("Segoe UI", 11), text_color=TXT3).pack(pady=16)
         for x in albums:
             name = x.get("collectionName", "")
             aname = x.get("artistName", "")
@@ -730,6 +872,9 @@ class App:
                           font=("Segoe UI", 9, "bold"),
                           command=lambda n=name, a=aname, u=art: self._show_album_popup(n, a, u)).pack(pady=(4, 0))
 
+        if not songs:
+            ctk.CTkLabel(self.ss_frame, text="No suggestions yet \u2014 listen to more music!",
+                         font=("Segoe UI", 11), text_color=TXT3).pack(pady=16)
         for x in songs:
             title = x.get("trackName", "")
             aname = x.get("artistName", "")
@@ -1356,18 +1501,35 @@ class App:
             self.nxt.configure(state=tk.DISABLED)
             self.dl_btn.configure(state=tk.DISABLED)
 
-    def _log_play(self, item):
+    def _log_play_start(self, item):
         if not self.profile_id:
             return
         try:
-            self.db.execute("INSERT INTO listening_history (profile_id, title, artist, album, art_url) VALUES (?,?,?,?,?)",
-                            (self.profile_id, item.title, item.artist, item.album or "", item.art_url or ""))
+            c = self.db.execute("INSERT INTO listening_history (profile_id, title, artist, album, art_url, song_duration) VALUES (?,?,?,?,?,?)",
+                                (self.profile_id, item.title, item.artist, item.album or "", item.art_url or "",
+                                 int(player.get_length() / 1000) if player.get_length() > 0 else 0))
+            self._current_history_id = c.lastrowid
+            self.db.commit()
+        except:
+            self._current_history_id = None
+
+    def _log_play_end(self, completed=False, skipped=False):
+        hid = getattr(self, '_current_history_id', None)
+        if not hid:
+            return
+        try:
+            dur = int(player.get_time() / 1000) if player.get_time() > 0 else 0
+            total = int(player.get_length() / 1000) if player.get_length() > 0 else 0
+            self.db.execute("UPDATE listening_history SET play_duration=?, completed=?, skipped=? WHERE id=?",
+                            (dur, 1 if completed else 0, 1 if skipped else 0, hid))
             self.db.commit()
         except:
             pass
+        self._current_history_id = None
 
     def _play_vlc(self, url):
         try:
+            self._log_play_end(skipped=True)  # end previous song if user skipped to new one
             player.stop()
             player.set_media(vlc.Media(url))
             player.play()
@@ -1379,7 +1541,7 @@ class App:
             self.queue_lb.selection_set(self.qidx)
             self.queue_lb.see(self.qidx)
             if self.now_playing:
-                self._log_play(self.now_playing)
+                self._log_play_start(self.now_playing)
         except Exception as e:
             self._err(str(e))
 
@@ -1394,6 +1556,7 @@ class App:
             self.pp.configure(text="\u25b6")
 
     def _stop(self):
+        self._log_play_end(skipped=True)
         player.stop()
         self.paused = False
         self.pp.configure(text="\u25b6", state=tk.DISABLED)
@@ -1424,11 +1587,13 @@ class App:
             return -1
 
     def _prev(self):
+        self._log_play_end(skipped=True)
         if self.qidx > 0:
             self.qidx -= 1
             self._play_q()
 
     def _next(self):
+        self._log_play_end(skipped=True)
         nxt = self._pick_next()
         if nxt >= 0:
             self.qidx = nxt
@@ -1437,6 +1602,8 @@ class App:
             self._stop()
 
     def _auto_nxt(self):
+        self._log_play_end(completed=True)
+        threading.Thread(target=self._recalculate_affinities, daemon=True).start()
         nxt = self._pick_next()
         if nxt >= 0:
             self.qidx = nxt
@@ -1602,6 +1769,18 @@ class App:
             pass
         self.root.after(500, self._tick)
 
+    def _auto_playlist_timer(self):
+        if self.profile_id:
+            self._generate_auto_playlists_async()
+            threading.Thread(target=self._recalculate_affinities, daemon=True).start()
+        self.root.after(1800000, self._auto_playlist_timer)  # every 30 min
+
+    def _generate_auto_playlists_async(self):
+        def go():
+            self._generate_auto_playlists()
+            self.root.after(0, lambda: (self._refresh_home_mixes(), self._refresh_sidebar_playlists()))
+        threading.Thread(target=go, daemon=True).start()
+
     def _bind(self):
         self.sk.bind("<ButtonPress-1>", lambda e: setattr(self, 'seeking', True))
         self.sk.bind("<ButtonRelease-1>", self._seek_done)
@@ -1634,6 +1813,7 @@ class App:
         messagebox.showerror("Error", msg)
 
     def _close(self):
+        self._log_play_end(skipped=True)
         player.stop()
         self.root.destroy()
 
@@ -1644,7 +1824,9 @@ class App:
             self.profile_id = row[0]
             self.profile_languages = json.loads(row[1]) if row[1] else []
             self.profile_artists = json.loads(row[2]) if row[2] else []
-            self.root.after(100, lambda: (self._refresh_home_mixes(), self._refresh_suggestions(), self._refresh_recently_played()))
+            self.root.after(100, lambda: (self._refresh_home_mixes(), self._refresh_suggestions(), self._refresh_recently_played(),
+                                          threading.Thread(target=self._recalculate_affinities, daemon=True).start(),
+                                          self._generate_auto_playlists_async()))
         else:
             self.root.after(500, self._onboarding_wizard)
 
@@ -1712,6 +1894,359 @@ class App:
             return ctk.CTkImage(light_image=img, dark_image=img, size=size)
         except:
             return None
+
+    def _recalculate_affinities(self):
+        if not self.profile_id:
+            return
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            pid = self.profile_id
+            rows = c.execute("""
+                SELECT artist, COUNT(*), SUM(completed), SUM(skipped),
+                       SUM(play_duration)
+                FROM listening_history WHERE profile_id=?
+                GROUP BY artist
+            """, (pid,)).fetchall()
+            for artist, play_count, completed, skipped, play_dur in rows:
+                completed = completed or 0
+                skipped = skipped or 0
+                play_dur = play_dur or 0
+                fav = c.execute(
+                    "SELECT COUNT(*) FROM playlist_tracks WHERE artist=? AND playlist_id IN "
+                    "(SELECT id FROM playlists WHERE profile_id=?)",
+                    (artist, pid)).fetchone()[0]
+                score = (play_count * 1.0 + completed * 2.0 - skipped * 0.5 +
+                         fav * 3.0 + min(play_dur / 60, 50))
+                c.execute("""
+                    INSERT INTO artist_affinity (profile_id, artist_name, play_count,
+                        completed_count, skip_count, fav_count, affinity_score, last_updated)
+                    VALUES (?,?,?,?,?,?,?, CURRENT_TIMESTAMP)
+                    ON CONFLICT(profile_id, artist_name) DO UPDATE SET
+                        play_count=excluded.play_count,
+                        completed_count=excluded.completed_count,
+                        skip_count=excluded.skip_count,
+                        fav_count=excluded.fav_count,
+                        affinity_score=excluded.affinity_score,
+                        last_updated=excluded.last_updated
+                """, (pid, artist, play_count, completed, skipped, fav, max(0, score)))
+            conn.commit()
+
+            # Taste profile: genre percentages from listening history
+            self._recalculate_taste_profile(conn, pid)
+            conn.close()
+        except Exception as e:
+            print(f"Affinity recalculation error: {e}")
+
+    def _recalculate_taste_profile(self, conn=None, pid=None):
+        if not self.profile_id and not pid:
+            return
+        if pid is None:
+            pid = self.profile_id
+        own_conn = False
+        if conn is None:
+            conn = sqlite3.connect(DB_PATH)
+            own_conn = True
+        try:
+            c = conn.cursor()
+            artists = c.execute(
+                "SELECT DISTINCT artist FROM listening_history WHERE profile_id=?",
+                (pid,)).fetchall()
+            genre_counts = {}
+            total = 0
+            for (artist,) in artists:
+                g = self._get_artist_genre(artist)
+                if g:
+                    genre_counts[g] = genre_counts.get(g, 0) + 1
+                    total += 1
+            for a in getattr(self, 'profile_artists', []):
+                g = self._get_artist_genre(a)
+                if g:
+                    genre_counts[g] = genre_counts.get(g, 0) + 2
+                    total += 2
+            if total > 0:
+                c.execute("DELETE FROM taste_profile WHERE profile_id=?", (pid,))
+                for genre, count in sorted(genre_counts.items(), key=lambda x: -x[1]):
+                    pct = round(count / total * 100, 1)
+                    c.execute(
+                        "INSERT INTO taste_profile (profile_id, genre, percentage, last_updated) VALUES (?,?,?,CURRENT_TIMESTAMP)",
+                        (pid, genre, pct))
+                conn.commit()
+        except:
+            pass
+        if own_conn:
+            conn.close()
+
+    def _get_artist_genre(self, artist_name):
+        if artist_name in self._genre_cache:
+            return self._genre_cache[artist_name]
+        try:
+            r = requests.get(f"{ITUNES}/search", params={"term": artist_name, "entity": "song", "limit": 1}, timeout=4)
+            items = r.json().get("results", [])
+            if items:
+                genre = items[0].get("primaryGenreName", "") or None
+            else:
+                genre = None
+            self._genre_cache[artist_name] = genre
+            return genre
+        except:
+            self._genre_cache[artist_name] = None
+            return None
+
+    def _song_similarity(self, s1, s2):
+        score = 0
+        if s1.get("artistName") and s2.get("artistName") and s1["artistName"].lower() == s2["artistName"].lower():
+            score += 10
+        if s1.get("primaryGenreName") and s2.get("primaryGenreName") and s1["primaryGenreName"] == s2["primaryGenreName"]:
+            score += 6
+        if s1.get("collectionName") and s2.get("collectionName") and s1["collectionName"] == s2["collectionName"]:
+            score += 5
+        y1 = s1.get("releaseDate", "")[:4] if s1.get("releaseDate") else ""
+        y2 = s2.get("releaseDate", "")[:4] if s2.get("releaseDate") else ""
+        if y1 and y2 and y1.isdigit() and y2.isdigit():
+            ydiff = abs(int(y1) - int(y2))
+            if ydiff <= 2:
+                score += 3
+            elif ydiff <= 5:
+                score += 1
+        return score
+
+    def _find_similar_songs(self, title, artist, limit=8):
+        try:
+            r = requests.get(f"{ITUNES}/search", params={"term": f"{artist} {title}", "entity": "song", "limit": 5}, timeout=6)
+            target = r.json().get("results", [])
+            if not target:
+                return []
+            target = target[0]
+            # Search for similar by genre
+            genre = target.get("primaryGenreName", "")
+            if not genre:
+                return []
+            r2 = requests.get(f"{ITUNES}/search", params={"term": genre, "entity": "song", "limit": 25}, timeout=6)
+            candidates = r2.json().get("results", [])
+            scored = [(self._song_similarity(target, c), c) for c in candidates
+                      if c["trackId"] != target["trackId"]]
+            scored.sort(key=lambda x: -x[0])
+            return [c for _, c in scored[:limit]]
+        except:
+            return []
+
+    def _generate_auto_playlists(self):
+        """Create auto playlists: Forgotten Favorites, Daily Mix, Recently Loved, Hidden Gems"""
+        if not self.profile_id:
+            return
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            pid = self.profile_id
+
+            # Remove old auto playlists
+            conn.execute("DELETE FROM playlist_tracks WHERE playlist_id IN "
+                         "(SELECT id FROM playlists WHERE profile_id=? AND source LIKE 'auto_%')", (pid,))
+            conn.execute("DELETE FROM playlists WHERE profile_id=? AND source LIKE 'auto_%'", (pid,))
+
+            # 1. Forgotten Favorites: played frequently but not in last 14 days
+            forgotten = conn.execute("""
+                SELECT title, artist, album, art_url, COUNT(*) as cnt
+                FROM listening_history
+                WHERE profile_id=? AND played_at < datetime('now', '-14 days')
+                GROUP BY title, artist HAVING cnt >= 3
+                ORDER BY cnt DESC LIMIT 15
+            """, (pid,)).fetchall()
+            if forgotten:
+                c = conn.execute("INSERT INTO playlists (profile_id, name, source) VALUES (?,?,'auto_forgotten')",
+                                 (pid, "Forgotten Favorites"))
+                pl_id = c.lastrowid
+                for i, (t, a, al, au, _) in enumerate(forgotten):
+                    conn.execute("INSERT INTO playlist_tracks (playlist_id, title, artist, album, art_url, position) VALUES (?,?,?,?,?,?)",
+                                 (pl_id, t, a, al or "", au or "", i))
+
+            # 2. Recently Loved: high completion rate from last 30 days
+            loved = conn.execute("""
+                SELECT title, artist, album, art_url, COUNT(*) as cnt
+                FROM listening_history
+                WHERE profile_id=? AND completed=1 AND played_at > datetime('now', '-30 days')
+                GROUP BY title, artist ORDER BY cnt DESC LIMIT 15
+            """, (pid,)).fetchall()
+            if loved:
+                c = conn.execute("INSERT INTO playlists (profile_id, name, source) VALUES (?,?,'auto_loved')",
+                                 (pid, "Recently Loved"))
+                pl_id = c.lastrowid
+                for i, (t, a, al, au, _) in enumerate(loved):
+                    conn.execute("INSERT INTO playlist_tracks (playlist_id, title, artist, album, art_url, position) VALUES (?,?,?,?,?,?)",
+                                 (pl_id, t, a, al or "", au or "", i))
+
+            # 3. Daily Mix: top genres + top affinity artists
+            taste = conn.execute(
+                "SELECT genre FROM taste_profile WHERE profile_id=? ORDER BY percentage DESC LIMIT 2",
+                (pid,)).fetchall()
+            top_artists = conn.execute(
+                "SELECT artist_name FROM artist_affinity WHERE profile_id=? ORDER BY affinity_score DESC LIMIT 3",
+                (pid,)).fetchall()
+            daily_songs = []
+            seen = set()
+            for (genre,) in taste:
+                try:
+                    r = requests.get(f"{ITUNES}/search", params={"term": genre, "entity": "song", "limit": 8}, timeout=6)
+                    for x in r.json().get("results", []):
+                        key = f"{x.get('trackName','')}||{x.get('artistName','')}"
+                        if key not in seen:
+                            seen.add(key)
+                            daily_songs.append(x)
+                except:
+                    pass
+            for (artist,) in top_artists:
+                try:
+                    r = requests.get(f"{ITUNES}/search", params={"term": artist, "entity": "song", "limit": 5}, timeout=6)
+                    for x in r.json().get("results", []):
+                        key = f"{x.get('trackName','')}||{x.get('artistName','')}"
+                        if key not in seen:
+                            seen.add(key)
+                            daily_songs.append(x)
+                except:
+                    pass
+            if daily_songs:
+                c = conn.execute("INSERT INTO playlists (profile_id, name, source) VALUES (?,?,'auto_daily')",
+                                 (pid, "Daily Mix"))
+                pl_id = c.lastrowid
+                for i, s in enumerate(daily_songs[:20]):
+                    conn.execute("INSERT INTO playlist_tracks (playlist_id, title, artist, album, art_url, position) VALUES (?,?,?,?,?,?)",
+                                 (pl_id, s.get("trackName",""), s.get("artistName",""), s.get("collectionName",""),
+                                  s.get("artworkUrl100",""), i))
+
+            # 4. Hidden Gems: deep cuts from top affinity artists (less popular songs)
+            if top_artists:
+                gem_songs = []
+                seen_gems = set()
+                for (artist,) in top_artists[:2]:
+                    try:
+                        r = requests.get(f"{ITUNES}/search", params={"term": artist, "entity": "song", "limit": 10}, timeout=6)
+                        all_songs = r.json().get("results", [])
+                        # Sort by trackPrice ascending or by trackTimeMillis as proxy for popularity
+                        all_songs.sort(key=lambda x: x.get("trackTimeMillis", 999999))
+                        for s in all_songs[:5]:
+                            key = f"{s.get('trackName','')}||{s.get('artistName','')}"
+                            if key not in seen_gems:
+                                seen_gems.add(key)
+                                gem_songs.append(s)
+                    except:
+                        pass
+                if gem_songs:
+                    c = conn.execute("INSERT INTO playlists (profile_id, name, source) VALUES (?,?,'auto_gems')",
+                                     (pid, "Hidden Gems"))
+                    pl_id = c.lastrowid
+                    for i, s in enumerate(gem_songs[:15]):
+                        conn.execute("INSERT INTO playlist_tracks (playlist_id, title, artist, album, art_url, position) VALUES (?,?,?,?,?,?)",
+                                     (pl_id, s.get("trackName",""), s.get("artistName",""), s.get("collectionName",""),
+                                      s.get("artworkUrl100",""), i))
+
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            print(f"Auto playlist error: {e}")
+
+    def _time_of_day_genre(self):
+        """Return genres preferred at current hour based on listening history."""
+        if not self.profile_id:
+            return []
+        hour = time.localtime().tm_hour
+        if hour < 12:
+            period = "morning"
+        elif hour < 17:
+            period = "afternoon"
+        elif hour < 21:
+            period = "evening"
+        else:
+            period = "night"
+        period_map = {"morning": (6, 12), "afternoon": (12, 17),
+                       "evening": (17, 21), "night": (21, 6)}
+        start_h, end_h = period_map[period]
+        try:
+            if start_h < end_h:
+                rows = self.db.execute("""
+                    SELECT DISTINCT lh.artist FROM listening_history lh
+                    WHERE lh.profile_id=? AND CAST(strftime('%H', lh.played_at) AS INTEGER) BETWEEN ? AND ?
+                    ORDER BY lh.id DESC LIMIT 15
+                """, (self.profile_id, start_h, end_h - 1)).fetchall()
+            else:
+                rows = self.db.execute("""
+                    SELECT DISTINCT lh.artist FROM listening_history lh
+                    WHERE lh.profile_id=? AND (CAST(strftime('%H', lh.played_at) AS INTEGER) >= ? OR CAST(strftime('%H', lh.played_at) AS INTEGER) < ?)
+                    ORDER BY lh.id DESC LIMIT 15
+                """, (self.profile_id, start_h, end_h)).fetchall()
+            genres = []
+            for (artist,) in rows:
+                g = self._get_artist_genre(artist)
+                if g:
+                    genres.append(g)
+            if genres:
+                return [max(set(genres), key=genres.count)]
+        except:
+            pass
+        return []
+
+    def _adjacent_genres(self, genre):
+        adj = {
+            "Pop": ["Indie Pop", "Synth Pop", "Art Pop", "Dance Pop"],
+            "Rock": ["Alternative", "Indie Rock", "Folk Rock", "Hard Rock"],
+            "Hip-Hop": ["R&B", "Trap", "Lo-Fi", "Rap"],
+            "Electronic": ["House", "Techno", "Ambient", "Dance"],
+            "Jazz": ["Soul", "Funk", "Blues", "R&B"],
+            "Classical": ["Orchestral", "Chamber", "Opera", "Piano"],
+            "R&B": ["Neo Soul", "Funk", "Hip-Hop", "Soul"],
+            "Country": ["Folk", "Americana", "Bluegrass", "Singer/Songwriter"],
+            "Metal": ["Hard Rock", "Punk", "Industrial", "Alternative"],
+            "Folk": ["Singer/Songwriter", "Indie Folk", "Americana", "Acoustic"],
+            "Blues": ["Jazz", "Soul", "Rock", "Funk"],
+            "Latin": ["Reggaeton", "Salsa", "Bachata", "Latin Pop"],
+            "K-Pop": ["J-Pop", "Pop", "Dance Pop", "Electronic"],
+        }
+        for key, vals in adj.items():
+            if genre.lower() in key.lower() or key.lower() in genre.lower():
+                return vals
+        return ["Indie", "Alternative", "Singer/Songwriter"]
+
+    def _collaborative_filter(self, limit=5):
+        """Find similar users via Jaccard similarity and recommend their songs."""
+        if not self.profile_id:
+            return []
+        try:
+            my_songs = self.db.execute(
+                "SELECT DISTINCT title, artist FROM listening_history WHERE profile_id=?", (self.profile_id,)).fetchall()
+            my_set = set(f"{t}||{a}" for t, a in my_songs)
+            if len(my_set) < 5:
+                return []
+
+            other_users = self.db.execute(
+                "SELECT DISTINCT profile_id FROM listening_history WHERE profile_id != ?", (self.profile_id,)).fetchall()
+            similarities = []
+            for (uid,) in other_users:
+                their_songs = self.db.execute(
+                    "SELECT DISTINCT title, artist FROM listening_history WHERE profile_id=?", (uid,)).fetchall()
+                their_set = set(f"{t}||{a}" for t, a in their_songs)
+                intersection = len(my_set & their_set)
+                union = len(my_set | their_set)
+                if union == 0:
+                    continue
+                jaccard = intersection / union
+                if jaccard > 0.1:
+                    similarities.append((jaccard, uid, their_set))
+            similarities.sort(key=lambda x: -x[0])
+
+            recommendations = []
+            seen = set()
+            for _, uid, their_set in similarities[:3]:
+                for key in their_set:
+                    if key not in my_set and key not in seen:
+                        seen.add(key)
+                        parts = key.split("||")
+                        recommendations.append({"title": parts[0], "artist": parts[1] if len(parts) > 1 else ""})
+                        if len(recommendations) >= limit:
+                            break
+                if len(recommendations) >= limit:
+                    break
+            return recommendations
+        except:
+            return []
 
     def _onboard_step2(self, parent, win, container, languages):
         for w in parent.winfo_children():
@@ -1937,7 +2472,9 @@ class App:
 
         def generate():
             self._generate_playlists()
-            self.root.after(0, lambda: (gen.destroy(), self._refresh_sidebar_playlists(), self._refresh_home_mixes(), self._refresh_suggestions(), self._refresh_recently_played()))
+            self.root.after(0, lambda: (gen.destroy(), self._refresh_sidebar_playlists(), self._refresh_home_mixes(), self._refresh_suggestions(), self._refresh_recently_played(),
+                                          threading.Thread(target=self._recalculate_affinities, daemon=True).start(),
+                                          self._generate_auto_playlists_async()))
 
         threading.Thread(target=generate, daemon=True).start()
 
