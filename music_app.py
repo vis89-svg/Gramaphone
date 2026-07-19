@@ -487,6 +487,42 @@ class App:
                           font=("Segoe UI", 11, "bold"),
                           command=lambda pid=pl_id: self._open_playlist(pid)).pack(pady=(8, 0))
 
+    def _refresh_recently_played(self):
+        for w in self.rec_frame.winfo_children():
+            w.destroy()
+        if not self.profile_id:
+            return
+        try:
+            c = self.db.execute(
+                "SELECT title, artist, album, art_url FROM listening_history WHERE profile_id=? ORDER BY id DESC LIMIT 10",
+                (self.profile_id,))
+            rows = c.fetchall()
+        except:
+            rows = []
+        if not rows:
+            ctk.CTkLabel(self.rec_frame, text="No recently played tracks yet.",
+                         font=("Segoe UI", 12), text_color=TXT3).pack(pady=20)
+            return
+        for title, artist, album, art_url in rows:
+            card = ctk.CTkFrame(self.rec_frame, fg_color=CARD, corner_radius=12, width=180, height=180)
+            card.pack(side=tk.LEFT, padx=6)
+            card.pack_propagate(False)
+            img = None
+            if art_url:
+                img = fetch_art(art_url.replace("100x100", "80x80"), (56, 56))
+            ilbl = ctk.CTkLabel(card, text="", image=img, width=56, height=56) if img else ctk.CTkLabel(card, text="\U0001F3B5", font=("Segoe UI", 24))
+            ilbl.pack(pady=(14, 4))
+            ctk.CTkLabel(card, text=title[:18], font=("Segoe UI", 12, "bold"),
+                         text_color=TXT).pack()
+            ctk.CTkLabel(card, text=artist, font=("Segoe UI", 9),
+                         text_color=TXT3).pack()
+            ctk.CTkButton(card, text="\u25b6", width=32, height=26,
+                          fg_color=GREEN, hover_color="#1aa34a",
+                          text_color="#000000", corner_radius=8,
+                          font=("Segoe UI", 10, "bold"),
+                          command=lambda t=title, a=artist, al=album, au=art_url:
+                              self._enqueue(t, a, al, au)).pack(pady=(6, 0))
+
     def _refresh_suggestions(self):
         for w in self.sa_frame.winfo_children():
             w.destroy()
@@ -929,6 +965,7 @@ class App:
             self.home_frame.grid()
             self.current_page = "home"
             self._refresh_suggestions()
+            self._refresh_recently_played()
         elif idx == 1:
             self.search_frame.grid()
             self.current_page = "search"
@@ -936,6 +973,7 @@ class App:
             self.home_frame.grid()
             self.current_page = "home"
             self._refresh_suggestions()
+            self._refresh_recently_played()
         elif idx == 3:
             self.search_frame.grid()
             self.current_page = "search"
@@ -943,6 +981,7 @@ class App:
             self.home_frame.grid()
             self.current_page = "home"
             self._refresh_suggestions()
+            self._refresh_recently_played()
 
     def _show_search(self):
         q = self.e.get().strip()
@@ -1605,7 +1644,7 @@ class App:
             self.profile_id = row[0]
             self.profile_languages = json.loads(row[1]) if row[1] else []
             self.profile_artists = json.loads(row[2]) if row[2] else []
-            self.root.after(100, lambda: (self._refresh_home_mixes(), self._refresh_suggestions()))
+            self.root.after(100, lambda: (self._refresh_home_mixes(), self._refresh_suggestions(), self._refresh_recently_played()))
         else:
             self.root.after(500, self._onboarding_wizard)
 
@@ -1898,7 +1937,7 @@ class App:
 
         def generate():
             self._generate_playlists()
-            self.root.after(0, lambda: (gen.destroy(), self._refresh_sidebar_playlists(), self._refresh_home_mixes(), self._refresh_suggestions()))
+            self.root.after(0, lambda: (gen.destroy(), self._refresh_sidebar_playlists(), self._refresh_home_mixes(), self._refresh_suggestions(), self._refresh_recently_played()))
 
         threading.Thread(target=generate, daemon=True).start()
 
