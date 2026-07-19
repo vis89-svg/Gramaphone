@@ -1434,6 +1434,7 @@ class App:
 
         self._onb_added = added = []
         self._onb_added_data = added_data = {}
+        self._onb_suggested_artists = []  # suggested artists for bonus playlists
         self._onb_update_sel = lambda: None  # placeholder used by _onb_show_related
 
         def update_sel():
@@ -1559,6 +1560,11 @@ class App:
         self.root.after(0, lambda: self._onb_show_related(related, added))
 
     def _onb_show_related(self, related, added):
+        # Collect suggested artist names for bonus playlist generation
+        for x in related:
+            an = x["artistName"]
+            if an not in added and an not in self._onb_suggested_artists:
+                self._onb_suggested_artists.append(an)
         for w in self._onb_suggest.winfo_children():
             w.destroy()
         ctk.CTkLabel(self._onb_suggest, text="You might also like \u2193",
@@ -1600,6 +1606,7 @@ class App:
         self.profile_id = c.lastrowid
         self.profile_languages = languages
         self.profile_artists = artists
+        self.profile_suggested = self._onb_suggested_artists[:] if hasattr(self, '_onb_suggested_artists') else []
         self.db.commit()
         win.destroy()
 
@@ -1663,6 +1670,25 @@ class App:
                         (playlist_id, title, artist, album, art_url, position) VALUES (?,?,?,?,?,?)""",
                         (pl_id, s["trackName"], s.get("artistName",""), s.get("collectionName",""),
                          s.get("artworkUrl100",""), i))
+
+        # Phase 2b: suggested artists (from "You might also like") — fetch and create playlists
+        suggested = [a for a in getattr(self, 'profile_suggested', []) if a not in all_artists]
+        for artist in suggested:
+            try:
+                r = requests.get(f"{ITUNES}/search", params={"term": artist, "entity": "song", "limit": 10}, timeout=10)
+                songs = r.json().get("results", [])
+                if songs:
+                    pl_name = f"{artist} Discovery"
+                    c = conn.execute("INSERT INTO playlists (profile_id, name, source) VALUES (?,?,?)",
+                                     (self.profile_id, pl_name, "suggested"))
+                    pl_id = c.lastrowid
+                    for i, s in enumerate(songs[:10]):
+                        conn.execute("""INSERT INTO playlist_tracks 
+                            (playlist_id, title, artist, album, art_url, position) VALUES (?,?,?,?,?,?)""",
+                            (pl_id, s["trackName"], s.get("artistName",""), s.get("collectionName",""),
+                             s.get("artworkUrl100",""), i))
+            except:
+                pass
 
         # Phase 3: genre-grouped playlists
         genre_groups = {}
