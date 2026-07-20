@@ -72,8 +72,11 @@ class AppState extends ChangeNotifier {
 
   Future<void> refresh() async {
     if (_profileId == null) return;
-    _suggestions =
-        await RecommendationService.getSuggestions(_profileId!);
+    _suggestions = await RecommendationService.getSuggestions(
+      _profileId!,
+      anchorYoutubeId: audio.lastYoutubeId,
+      anchorTrack: currentTrack,
+    );
     var history =
         await DatabaseService.getListeningHistory(_profileId!, limit: 20);
     _recentlyPlayed = history;

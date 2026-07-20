@@ -2,6 +2,8 @@ import 'dart:math';
 import '../models/track.dart';
 import 'database_service.dart';
 import 'itunes_service.dart';
+import 'ytdlp_service.dart';
+import 'audio_service.dart';
 
 class RecommendationService {
   static final Map<String, String?> _genreCache = {};
@@ -148,7 +150,7 @@ class RecommendationService {
     await DatabaseService.saveTasteProfile(pid, tastes);
   }
 
-  static Future<Map<String, dynamic>> getSuggestions(int pid) async {
+  static Future<Map<String, dynamic>> getSuggestions(int pid, {String? anchorYoutubeId, Track? anchorTrack}) async {
     var artists = await DatabaseService.getProfileArtists(pid);
     var favs = artists.take(5).toList();
     var taste = await getTasteGenres(pid);
@@ -210,12 +212,35 @@ class RecommendationService {
     List<Track> songsResult = [];
     Map<String, int> artistSongCount = {};
     bool ok(Track t) {
+      if (t.title.isEmpty || t.artist.isEmpty) return false;
       if (heardSongs.contains(t.dbKey) || recentSongs.contains(t.dbKey)) return false;
       if (artistSongCount.putIfAbsent(t.artist, () => 0) >= 2) return false;
       return true;
     }
+
+    // YouTube Next / anchor-based (Echo Music style)
+    if (anchorYoutubeId != null) {
+      var related = await YtDlpService.getRelated(anchorYoutubeId);
+      for (var s in related) {
+        if (ok(s)) {
+          artistSongCount[s.artist] = (artistSongCount[s.artist] ?? 0) + 1;
+          songsResult.add(s);
+        }
+      }
+    } else if (anchorTrack != null) {
+      var related = await YtDlpService.search(
+          '${anchorTrack.title} ${anchorTrack.artist}', limit: 6);
+      for (var s in related) {
+        if (ok(s)) {
+          artistSongCount[s.artist] = (artistSongCount[s.artist] ?? 0) + 1;
+          songsResult.add(s);
+        }
+      }
+    }
+
+    // YouTube genre search (replaces iTunes genre search)
     for (var g in topGenres.take(2)) {
-      var songs = await ItunesService.searchSongs(g, limit: 8);
+      var songs = await YtDlpService.search(g, limit: 6);
       for (var s in songs) {
         if (ok(s)) {
           artistSongCount[s.artist] = (artistSongCount[s.artist] ?? 0) + 1;
@@ -223,8 +248,10 @@ class RecommendationService {
         }
       }
     }
+
+    // Affinity artist songs from YouTube
     for (var a in affArtists.take(3)) {
-      var songs = await ItunesService.getArtistTopSongs(a, limit: 4);
+      var songs = await YtDlpService.search(a, limit: 4);
       for (var s in songs) {
         if (ok(s)) {
           artistSongCount[s.artist] = (artistSongCount[s.artist] ?? 0) + 1;

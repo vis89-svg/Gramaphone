@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:ui' show VoidCallback;
 import 'package:media_kit/media_kit.dart' hide Track;
@@ -44,6 +45,9 @@ class AudioService {
   String? _playbackError;
   String? get playbackError => _playbackError;
 
+  String? _lastYoutubeId;
+  String? get lastYoutubeId => _lastYoutubeId;
+
   VoidCallback? onTrackChanged;
 
   Future<void> init() async {
@@ -60,7 +64,7 @@ class AudioService {
     });
   }
 
-  Future<String?> _getAudioUrl(model.Track t) async {
+  Future<_YtResult?> _getAudioUrl(model.Track t) async {
     var queries = [
       '${t.title} ${t.artist} topic',
       '${t.title} ${t.artist} official audio',
@@ -72,14 +76,20 @@ class AudioService {
       try {
         var r = await Process.run('python', [
           '-m', 'yt_dlp',
-          '-g',
+          '--dump-json',
           '--format', 'bestaudio',
           '--default-search', 'ytsearch',
           '--', q,
         ]);
         if (r.exitCode == 0) {
-          var url = (r.stdout as String).trim();
-          if (url.isNotEmpty) return url;
+          var line = (r.stdout as String).trim();
+          if (line.isEmpty) continue;
+          var j = json.decode(line);
+          var url = j['url'] as String?;
+          var id = j['id'] as String?;
+          if (url != null && url.isNotEmpty) {
+            return _YtResult(url: url, videoId: id);
+          }
         }
       } catch (_) {
         continue;
@@ -94,16 +104,17 @@ class AudioService {
     loadingController.add(true);
     trackController.add(t);
     try {
-      var url = await _getAudioUrl(t);
-      if (url == null) {
+      var result = await _getAudioUrl(t);
+      if (result == null) {
         _isLoading = false;
         _playbackError = 'Audio not found on YouTube';
         loadingController.add(false);
         errorController.add('Could not find audio for "${t.title}" by ${t.artist}');
         return;
       }
+      _lastYoutubeId = result.videoId;
       await player.stop();
-      await player.open(Media(url));
+      await player.open(Media(result.url));
       await player.play();
       _currentTrack = t;
       _playbackError = null;
@@ -116,6 +127,8 @@ class AudioService {
     trackController.add(t);
     onTrackChanged?.call();
   }
+
+
 
   Future<void> playPause() async {
     if (_isPlaying) {
@@ -150,4 +163,10 @@ class AudioService {
     loadingController.close();
     errorController.close();
   }
+}
+
+class _YtResult {
+  final String url;
+  final String? videoId;
+  _YtResult({required this.url, this.videoId});
 }
