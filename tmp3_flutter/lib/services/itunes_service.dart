@@ -66,7 +66,22 @@ class ItunesService {
     }
   }
 
-  static Future<List<Track>> getAlbumTracks(String albumName, String artistName) async {
+  static Future<List<Track>> getAlbumTracks(String albumName, String artistName,
+      {String? collectionId}) async {
+    if (collectionId != null) {
+      try {
+        var r = await http
+            .get(_build('lookup', {'id': collectionId, 'entity': 'song'}))
+            .timeout(const Duration(seconds: 10));
+        if (r.statusCode != 200) return [];
+        var data = json.decode(r.body);
+        var results = data['results'] as List;
+        if (results.length < 2) return [];
+        return results.sublist(1).map((m) => Track.fromMap(m)).toList();
+      } catch (_) {
+        return [];
+      }
+    }
     try {
       var r = await http
           .get(_build('search', {'term': albumName, 'entity': 'song', 'limit': '20'}))
@@ -82,6 +97,25 @@ class ItunesService {
     } catch (_) {
       return [];
     }
+  }
+
+  static List<Map<String, dynamic>> deduplicateArtists(
+      List<Map<String, dynamic>> artists) {
+    Map<String, Map<String, dynamic>> merged = {};
+    for (var a in artists) {
+      var name = a['artistName'] as String;
+      if (merged.containsKey(name)) {
+        var existing = merged[name]!;
+        var g1 = existing['primaryGenreName'] as String? ?? '';
+        var g2 = a['primaryGenreName'] as String? ?? '';
+        if (g2.isNotEmpty && !g1.contains(g2)) {
+          existing['primaryGenreName'] = g1.isNotEmpty ? '$g1, $g2' : g2;
+        }
+      } else {
+        merged[name] = Map.from(a);
+      }
+    }
+    return merged.values.toList();
   }
 
   static Future<String?> getArtistGenre(String artistName) async {

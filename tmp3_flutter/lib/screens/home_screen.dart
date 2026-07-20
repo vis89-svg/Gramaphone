@@ -92,6 +92,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       x['collectionName'] as String,
                       x['artistName'] as String,
                       x['artworkUrl100'] as String? ?? '',
+                      collectionId: x['collectionId']?.toString(),
                     );
                   },
                 ),
@@ -189,7 +190,7 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  Widget _albumCard(String name, String artist, String art) {
+  Widget _albumCard(String name, String artist, String art, {String? collectionId}) {
     return Container(
       width: 140,
       margin: const EdgeInsets.only(right: 10),
@@ -218,7 +219,7 @@ class _HomeScreenState extends State<HomeScreen> {
           Text(artist,
               style: const TextStyle(color: Tmp3App.txt3, fontSize: 10)),
           TextButton(
-            onPressed: () => _showAlbumTracks(name, artist),
+            onPressed: () => _showAlbumTracks(name, artist, collectionId: collectionId),
             child: const Text('View Tracks',
                 style: TextStyle(color: Tmp3App.green, fontSize: 10)),
           ),
@@ -286,13 +287,13 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  void _showAlbumTracks(String album, String artist) {
+  void _showAlbumTracks(String album, String artist, {String? collectionId}) {
     showModalBottomSheet(
       context: context,
       backgroundColor: Tmp3App.bg,
       builder: (_) => _TrackListSheet(
         title: album,
-        future: ItunesService.getAlbumTracks(album, artist),
+        future: ItunesService.getAlbumTracks(album, artist, collectionId: collectionId),
       ),
     );
   }

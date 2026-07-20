@@ -44,7 +44,8 @@ class _SearchScreenState extends State<SearchScreen> {
     }
 
     var songs = await ItunesService.searchSongs(q.trim(), limit: 15);
-    var artists = await ItunesService.searchArtists(q.trim(), limit: 8);
+    var artists = ItunesService.deduplicateArtists(
+        await ItunesService.searchArtists(q.trim(), limit: 12));
     var albums = await ItunesService.searchAlbums(q.trim(), limit: 8);
 
     songs.sort((a, b) {
@@ -270,6 +271,7 @@ class _SearchScreenState extends State<SearchScreen> {
     var name = x['collectionName'] as String? ?? '';
     var artist = x['artistName'] as String? ?? '';
     var art = x['artworkUrl100'] as String? ?? '';
+    var cid = x['collectionId']?.toString();
     return Container(
       width: 140,
       margin: const EdgeInsets.only(right: 10),
@@ -303,7 +305,7 @@ class _SearchScreenState extends State<SearchScreen> {
           Text(artist,
               style: const TextStyle(color: Tmp3App.txt3, fontSize: 10)),
           TextButton(
-            onPressed: () => _showAlbumTracks(name, artist),
+            onPressed: () => _showAlbumTracks(name, artist, collectionId: cid),
             child: const Text('View Tracks',
                 style: TextStyle(color: Tmp3App.green, fontSize: 10)),
           ),
@@ -369,8 +371,9 @@ class _SearchScreenState extends State<SearchScreen> {
     var name = x['collectionName'] as String? ?? '';
     var artist = x['artistName'] as String? ?? '';
     var art = x['artworkUrl100'] as String? ?? '';
+    var cid = x['collectionId']?.toString();
     return InkWell(
-      onTap: () => _showAlbumTracks(name, artist),
+      onTap: () => _showAlbumTracks(name, artist, collectionId: cid),
       child: Container(
         padding: const EdgeInsets.all(12),
         margin: const EdgeInsets.only(bottom: 6),
@@ -500,13 +503,13 @@ class _SearchScreenState extends State<SearchScreen> {
     );
   }
 
-  void _showAlbumTracks(String album, String artist) {
+  void _showAlbumTracks(String album, String artist, {String? collectionId}) {
     showModalBottomSheet(
       context: context,
       backgroundColor: Tmp3App.bg,
       builder: (_) => _TrackListSheet(
         title: album,
-        future: ItunesService.getAlbumTracks(album, artist),
+        future: ItunesService.getAlbumTracks(album, artist, collectionId: collectionId),
       ),
     );
   }
