@@ -2,7 +2,6 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:ui' show VoidCallback;
 import 'package:media_kit/media_kit.dart' hide Track;
-import 'package:youtube_explode_dart/youtube_explode_dart.dart';
 import '../models/track.dart' as model;
 
 class AudioService {
@@ -11,7 +10,6 @@ class AudioService {
   AudioService._();
 
   final player = Player();
-  final yt = YoutubeExplode();
 
   model.Track? _currentTrack;
   model.Track? get currentTrack => _currentTrack;
@@ -63,39 +61,25 @@ class AudioService {
   }
 
   Future<String?> _getAudioUrl(model.Track t) async {
-    var query = '${t.title} ${t.artist}';
-    try {
-      var r = await Process.run('python', [
-        '-m', 'yt_dlp',
-        '-g',
-        '--format', 'bestaudio',
-        '--default-search', 'ytsearch',
-        '--', query,
-      ]);
-      if (r.exitCode == 0) {
-        var url = (r.stdout as String).trim();
-        if (url.isNotEmpty) return url;
-      }
-    } catch (_) {}
     var queries = [
-      '$query audio',
-      '$query',
-      '${t.artist} ${t.title} lyrics',
-      '$query official',
+      '${t.title} ${t.artist} topic',
+      '${t.title} ${t.artist} official audio',
+      '${t.title} ${t.artist} official',
+      '${t.artist} - ${t.title}',
+      '${t.title} ${t.artist}',
     ];
-    var seen = <String>{};
     for (var q in queries) {
       try {
-        var search = await yt.search.search(q);
-        for (var video in search.take(5)) {
-          if (!seen.add(video.id.value)) continue;
-          var manifest =
-              await yt.videos.streamsClient.getManifest(video.id.value);
-          var audio = manifest.audioOnly.toList();
-          if (audio.isNotEmpty) {
-            audio.sort((a, b) => b.bitrate.compareTo(a.bitrate));
-            return audio.first.url.toString();
-          }
+        var r = await Process.run('python', [
+          '-m', 'yt_dlp',
+          '-g',
+          '--format', 'bestaudio',
+          '--default-search', 'ytsearch',
+          '--', q,
+        ]);
+        if (r.exitCode == 0) {
+          var url = (r.stdout as String).trim();
+          if (url.isNotEmpty) return url;
         }
       } catch (_) {
         continue;
@@ -160,7 +144,6 @@ class AudioService {
     _durSub?.cancel();
     _stateSub?.cancel();
     player.dispose();
-    yt.close();
     positionController.close();
     playStateController.close();
     trackController.close();
