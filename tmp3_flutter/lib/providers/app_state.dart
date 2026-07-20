@@ -4,6 +4,7 @@ import '../models/track.dart';
 import '../services/database_service.dart';
 import '../services/audio_service.dart';
 import '../services/recommendation_service.dart';
+import '../services/ytdlp_service.dart';
 
 class AppState extends ChangeNotifier {
   int? _profileId;
@@ -35,10 +36,13 @@ class AppState extends ChangeNotifier {
     _trackSub = audio.trackController.stream.listen((t) {
       if (t != null) notifyListeners();
     });
-    audio.onTrackCompleted = () {
+    audio.onTrackCompleted = () async {
       var t = currentTrack;
       if (t != null) {
         logPlay(t, audio.duration, true, false);
+      }
+      if (_queueIndex >= _queue.length - 2) {
+        await _injectRelatedTracks();
       }
       next();
     };
@@ -145,6 +149,38 @@ class AppState extends ChangeNotifier {
     _queue.clear();
     _queueIndex = -1;
     notifyListeners();
+  }
+
+  Future<void> _injectRelatedTracks() async {
+    var anchorTrack = currentTrack;
+    if (anchorTrack == null) return;
+    var vid = audio.lastYoutubeId;
+    List<Track> related;
+    if (vid != null) {
+      related = await YtDlpService.getRelated(vid, limit: 3);
+    } else {
+      related = await YtDlpService.search(
+          '${anchorTrack.title} ${anchorTrack.artist}', limit: 3);
+    }
+    var heard = <String>{};
+    for (var q in _queue) {
+      heard.add(q.dbKey);
+    }
+    var count = 0;
+    for (var r in related) {
+      if (heard.add(r.dbKey)) {
+        enqueueNext(r);
+        count++;
+      }
+      if (count >= 3) break;
+    }
+  }
+
+  Map<String, dynamic> getInjectReason(Track t) {
+    return {
+      'source': 'related',
+      'anchor': currentTrack?.title ?? 'unknown',
+    };
   }
 
   @override

@@ -46,17 +46,17 @@ class YtDlpService {
         '--dump-json',
         '--flat-playlist',
         '--no-warnings',
-        '--', 'https://www.youtube.com/watch?v=$videoId',
+        '--', 'https://www.youtube.com/watch?v=$videoId&list=RD$videoId',
       ]);
       if (r.exitCode != 0) return [];
-      var j = json.decode((r.stdout as String).split('\n').firstWhere(
-          (l) => l.trim().isNotEmpty, orElse: () => ''));
-      if (j == null || j is! Map) return [];
-      var entries = j['entries'] as List?;
-      if (entries == null || entries.isEmpty) return [];
+      var lines = (r.stdout as String)
+          .split('\n')
+          .where((l) => l.trim().isNotEmpty)
+          .toList();
       List<Track> results = [];
-      for (var e in entries.take(limit)) {
+      for (var line in lines.skip(1).take(limit)) {
         try {
+          var e = json.decode(line);
           results.add(Track(
             title: e['title'] ?? '',
             artist: e['uploader'] ?? e['channel'] ?? 'Unknown',
