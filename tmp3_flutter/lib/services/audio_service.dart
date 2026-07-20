@@ -49,6 +49,9 @@ class AudioService {
   String? get lastYoutubeId => _lastYoutubeId;
 
   VoidCallback? onTrackChanged;
+  VoidCallback? onTrackCompleted;
+
+  StreamSubscription? _complSub;
 
   Future<void> init() async {
     _posSub = player.stream.position.listen((p) {
@@ -61,6 +64,9 @@ class AudioService {
     _stateSub = player.stream.playing.listen((p) {
       _isPlaying = p;
       playStateController.add(p);
+    });
+    _complSub = player.stream.completed.listen((_) {
+      onTrackCompleted?.call();
     });
   }
 
@@ -156,6 +162,7 @@ class AudioService {
     _posSub?.cancel();
     _durSub?.cancel();
     _stateSub?.cancel();
+    _complSub?.cancel();
     player.dispose();
     positionController.close();
     playStateController.close();

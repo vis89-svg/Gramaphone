@@ -35,6 +35,13 @@ class AppState extends ChangeNotifier {
     _trackSub = audio.trackController.stream.listen((t) {
       if (t != null) notifyListeners();
     });
+    audio.onTrackCompleted = () {
+      var t = currentTrack;
+      if (t != null) {
+        logPlay(t, audio.duration, true, false);
+      }
+      next();
+    };
   }
 
   Future<void> loadProfile(int id) async {
