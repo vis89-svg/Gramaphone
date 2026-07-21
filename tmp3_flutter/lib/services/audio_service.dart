@@ -85,7 +85,7 @@ class AudioService {
         return url;
       }
     }
-    var results = await _ytDlp.search(
+    var results = await _ytDlp.searchAudio(
       '${t.artist} - ${t.title}',
       limit: 5,
     );

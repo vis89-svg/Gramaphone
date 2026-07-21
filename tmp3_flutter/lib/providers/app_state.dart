@@ -119,7 +119,7 @@ class AppState extends ChangeNotifier {
   // --- AI Playlist ---
 
   Future<void> createAiPlaylist(String prompt) async {
-    var tracks = await queueMgr.ytDlp.search(prompt, limit: 15);
+    var tracks = await queueMgr.ytDlp.searchAudio(prompt, limit: 15);
     for (var t in tracks) {
       enqueue(t);
     }

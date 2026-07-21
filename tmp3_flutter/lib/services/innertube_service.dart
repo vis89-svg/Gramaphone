@@ -44,6 +44,14 @@ class InnerTubeService {
     }
   }
 
+  Future<List<Track>> searchAudio(String query, {int limit = 8}) async {
+    var results = await search('$query - topic', limit: limit);
+    if (results.isEmpty) {
+      results = await search(query, limit: limit);
+    }
+    return results;
+  }
+
   Future<List<Track>> getRelated(String videoId, {int limit = 8}) async {
     var cacheKey = 'related:$videoId';
     if (_relatedCache.containsKey(cacheKey)) {

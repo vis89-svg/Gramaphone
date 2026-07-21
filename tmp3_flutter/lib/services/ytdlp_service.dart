@@ -16,6 +16,11 @@ class YtDlpService implements YtDlpInterface {
   }
 
   @override
+  Future<List<Track>> searchAudio(String query, {int limit = 8}) async {
+    return _innerTube.searchAudio(query, limit: limit);
+  }
+
+  @override
   Future<List<Track>> getRelated(String videoId, {int limit = 8}) async {
     return _innerTube.getRelated(videoId, limit: limit);
   }

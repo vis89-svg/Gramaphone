@@ -25,7 +25,7 @@ class _MixScreenState extends State<MixScreen> {
 
   Future<void> _load() async {
     var yt = context.read<AppState>().ytDlp;
-    var tracks = await yt.search(widget.artist, limit: 50);
+    var tracks = await yt.searchAudio(widget.artist, limit: 50);
     var songs = tracks.where((t) => t.duration > 30 && t.duration < 600).take(15).toList();
     if (mounted) setState(() { _songs = songs; _loading = false; });
   }

@@ -233,7 +233,7 @@ class RecommendationService {
         }
       }
     } else if (anchorTrack != null) {
-      var related = await YtDlpService().search(
+      var related = await YtDlpService().searchAudio(
           '${anchorTrack.title} ${anchorTrack.artist}', limit: 6);
       for (var s in related) {
         if (ok(s)) {
@@ -245,7 +245,7 @@ class RecommendationService {
 
     // YouTube genre search (replaces iTunes genre search)
     for (var g in topGenres.take(2)) {
-      var songs = await YtDlpService().search(g, limit: 6);
+      var songs = await YtDlpService().searchAudio(g, limit: 6);
       for (var s in songs) {
         if (ok(s)) {
           artistSongCount[s.artist] = (artistSongCount[s.artist] ?? 0) + 1;
@@ -256,7 +256,7 @@ class RecommendationService {
 
     // Affinity artist songs from YouTube
     for (var a in affArtists.take(3)) {
-      var songs = await YtDlpService().search(a, limit: 4);
+      var songs = await YtDlpService().searchAudio(a, limit: 4);
       for (var s in songs) {
         if (ok(s)) {
           artistSongCount[s.artist] = (artistSongCount[s.artist] ?? 0) + 1;

@@ -30,7 +30,7 @@ class _ArtistScreenState extends State<ArtistScreen> {
   Future<void> _load() async {
     var yt = context.read<AppState>().ytDlp;
     var results = await Future.wait([
-      yt.search(widget.artist, limit: 50),
+      yt.searchAudio(widget.artist, limit: 50),
       ItunesService.searchAlbums(widget.artist, limit: 10),
       yt.search('${widget.artist} feat', limit: 20),
     ]);

@@ -86,7 +86,7 @@ class QueueManager extends ChangeNotifier {
       if (vid != null) {
         related = await ytDlp.getRelated(vid, limit: 12);
       } else {
-        related = await ytDlp.search(
+        related = await ytDlp.searchAudio(
             '${anchorTrack.title} ${anchorTrack.artist}', limit: 12);
       }
       debugPrint('[INJECT] related returned ${related.length} tracks');

@@ -31,10 +31,10 @@ class _AlbumScreenState extends State<AlbumScreen> {
     if (widget.playlistId != null) {
       tracks = await yt.getPlaylistVideos(widget.playlistId!);
       if (tracks.isEmpty && widget.artist != null) {
-        tracks = await yt.search('${widget.albumTitle} ${widget.artist}', limit: 30);
+        tracks = await yt.searchAudio('${widget.albumTitle} ${widget.artist}', limit: 30);
       }
     } else if (widget.artist != null) {
-      tracks = await yt.search('${widget.albumTitle} ${widget.artist}', limit: 30);
+      tracks = await yt.searchAudio('${widget.albumTitle} ${widget.artist}', limit: 30);
     } else {
       tracks = [];
     }
