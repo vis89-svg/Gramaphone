@@ -192,17 +192,23 @@ class RecommendationService {
       }
     }
 
-    // Suggested Albums
+    // Suggested Albums (via YouTube)
     List<Map<String, dynamic>> albumsResult = [];
-    Set<String> seenAlbums = {};
+    Set<String> seenTracks = {};
     var albumArtists = affArtists.take(4).toList();
     if (albumArtists.isEmpty) albumArtists = favs.take(3).toList();
+    var yt = YtDlpService();
     for (var a in albumArtists) {
-      var results = await ItunesService.searchAlbums(a, limit: 4);
-      for (var x in results) {
-        var name = x['collectionName'] as String?;
-        if (name != null && seenAlbums.add(name)) {
-          albumsResult.add(x);
+      var tracks = await yt.search('$a - topic', limit: 6);
+      for (var t in tracks) {
+        var key = '${t.title}||${t.artist}';
+        if (seenTracks.add(key)) {
+          albumsResult.add({
+            'title': t.title,
+            'artist': t.artist,
+            'youtubeId': t.youtubeId ?? '',
+            'artworkUrl': t.artworkUrl,
+          });
         }
       }
     }

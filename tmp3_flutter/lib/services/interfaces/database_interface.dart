@@ -16,4 +16,8 @@ abstract class DatabaseInterface {
   Future<List<Map<String, dynamic>>> getPlaylists(int pid, {String? type});
   Future<int> createPlaylist(int pid, String name, String type);
   Future<List<Map<String, dynamic>>> getPlaylistTracks(int plid);
+  Future<void> addPlaylistTrack(int plid, Track t);
+
+  Future<List<Map<String, dynamic>>> getHeavyRotation(int pid, {int limit = 20});
+  Future<List<Map<String, dynamic>>> getRecentlyPlayedTracks(int pid, {int limit = 10});
 }

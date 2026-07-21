@@ -275,4 +275,42 @@ class DatabaseService {
     return await d.query('playlist_tracks',
         where: 'playlist_id = ?', whereArgs: [plid]);
   }
+
+  static Future<void> addPlaylistTrack(int plid, Track t) async {
+    final d = await db;
+    await d.insert('playlist_tracks', {
+      'playlist_id': plid,
+      'title': t.title,
+      'artist': t.artist,
+      'album': t.album,
+      'artwork_url': t.artworkUrl,
+    });
+  }
+
+  static Future<List<Map<String, dynamic>>> getHeavyRotation(int pid,
+      {int limit = 20}) async {
+    final d = await db;
+    return await d.rawQuery('''
+      SELECT title, artist, album, COUNT(*) as play_count,
+             MAX(played_at) as last_played
+      FROM listening_history
+      WHERE profile_id = ? AND played_at >= datetime('now', '-30 days')
+      GROUP BY title, artist
+      ORDER BY play_count DESC
+      LIMIT ?
+    ''', [pid, limit]);
+  }
+
+  static Future<List<Map<String, dynamic>>> getRecentlyPlayedTracks(int pid,
+      {int limit = 10}) async {
+    final d = await db;
+    return await d.rawQuery('''
+      SELECT title, artist, album, play_duration, completed,
+             played_at
+      FROM listening_history
+      WHERE profile_id = ?
+      ORDER BY id DESC
+      LIMIT ?
+    ''', [pid, limit]);
+  }
 }

@@ -62,4 +62,16 @@ class DatabaseRepository implements DatabaseInterface {
   @override
   Future<List<Map<String, dynamic>>> getPlaylistTracks(int plid) =>
       DatabaseService.getPlaylistTracks(plid);
+
+  @override
+  Future<void> addPlaylistTrack(int plid, Track t) =>
+      DatabaseService.addPlaylistTrack(plid, t);
+
+  @override
+  Future<List<Map<String, dynamic>>> getHeavyRotation(int pid, {int limit = 20}) =>
+      DatabaseService.getHeavyRotation(pid, limit: limit);
+
+  @override
+  Future<List<Map<String, dynamic>>> getRecentlyPlayedTracks(int pid, {int limit = 10}) =>
+      DatabaseService.getRecentlyPlayedTracks(pid, limit: limit);
 }

@@ -76,7 +76,7 @@ class QueueManager extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> injectRelatedTracks() async {
+  Future<void> injectRelatedTracks({bool interleave = false}) async {
     try {
       var anchorTrack = currentTrack;
       if (anchorTrack == null) return;
@@ -98,9 +98,15 @@ class QueueManager extends ChangeNotifier {
         debugPrint('[INJECT] candidate="${r.title}" | "${r.artist}" yt=${r.youtubeId} key="$nk" sk="$sk" dup=$dup heardSize=${_sessionHeard.length}');
         if (dup) continue;
         _sessionHeard.add(sk);
-        _queue.add(r);
+        if (interleave && _queueIndex >= 0) {
+          var insertAt = _queueIndex + count + 1;
+          if (insertAt > _queue.length) insertAt = _queue.length;
+          _queue.insert(insertAt, r);
+        } else {
+          _queue.add(r);
+        }
         count++;
-        debugPrint('[INJECT] ADDED (count=$count)');
+        debugPrint('[INJECT] ADDED (count=$count) interleave=$interleave');
         if (count >= 3) break;
       }
       debugPrint('[INJECT] done — added $count tracks');

@@ -32,12 +32,23 @@ class AppState extends ChangeNotifier {
       if (t != null) {
         await logPlay(t, audio.duration, true, false);
       }
-      if (queueMgr.queueIndex >= queueMgr.queue.length - 2) {
-        await queueMgr.injectRelatedTracks();
+      var idx = queueMgr.queueIndex;
+      var len = queueMgr.queue.length;
+      if (idx >= len - 2) {
+        await queueMgr.injectRelatedTracks(interleave: _smartShuffle);
       }
       await queueMgr.next();
     };
   }
+
+  bool _smartShuffle = false;
+  bool get smartShuffle => _smartShuffle;
+  void toggleSmartShuffle() {
+    _smartShuffle = !_smartShuffle;
+    notifyListeners();
+  }
+
+  YtDlpInterface get ytDlp => queueMgr.ytDlp;
 
   // --- Delegated getters ---
 
@@ -49,7 +60,10 @@ class AppState extends ChangeNotifier {
   Track? get currentTrack => queueMgr.currentTrack;
   Map<String, dynamic> get suggestions => library.suggestions;
   List<Map<String, dynamic>> get recentlyPlayed => library.recentlyPlayed;
+  List<Map<String, dynamic>> get heavyRotation => library.heavyRotation;
   List<Map<String, dynamic>> get playlists => library.playlists;
+  List<Track> get dailyMixes => library.dailyMixes;
+  List<Track> get newReleases => library.newReleases;
 
   // --- Coordinated operations ---
 
@@ -76,11 +90,19 @@ class AppState extends ChangeNotifier {
   }
 
   Future<void> refresh() async {
-    await library.refresh(
-      profileId: profile.profileId,
-      anchorYoutubeId: audio.lastYoutubeId,
-      anchorTrack: queueMgr.currentTrack,
-    );
+    try {
+      var pid = profile.profileId;
+      if (pid == null) return;
+      await library.refresh(
+        profileId: pid,
+        anchorYoutubeId: audio.lastYoutubeId,
+        anchorTrack: queueMgr.currentTrack,
+      );
+      await library.generateDailyMixes(pid);
+      await library.fetchNewReleases(pid);
+    } catch (e) {
+      debugPrint('[REFRESH] error: $e');
+    }
   }
 
   // --- Queue operations ---
@@ -93,6 +115,15 @@ class AppState extends ChangeNotifier {
   Future<void> prev() => queueMgr.prev();
   void removeFromQueue(int index) => queueMgr.removeFromQueue(index);
   void clearQueue() => queueMgr.clearQueue();
+
+  // --- AI Playlist ---
+
+  Future<void> createAiPlaylist(String prompt) async {
+    var tracks = await queueMgr.ytDlp.search(prompt, limit: 15);
+    for (var t in tracks) {
+      enqueue(t);
+    }
+  }
 
   Map<String, dynamic> getInjectReason(Track t) {
     return {
