@@ -77,7 +77,8 @@ class _MainShellState extends State<MainShell> {
 
   Future<void> _checkOnboarding() async {
     var state = context.read<AppState>();
-    if (!state.isOnboarded) {
+    await state.profile.tryLoadExistingProfile();
+    if (mounted && !state.isOnboarded) {
       setState(() => _showOnboarding = true);
     }
   }

@@ -22,13 +22,13 @@ class QueueManager extends ChangeNotifier {
           : null;
 
   void enqueue(Track t) {
-    _sessionHeard.add(_normalizeKey(t));
+    _sessionHeard.add(_sessionKey(t));
     _queue.add(t);
     notifyListeners();
   }
 
   void enqueueNext(Track t) {
-    _sessionHeard.add(_normalizeKey(t));
+    _sessionHeard.add(_sessionKey(t));
     _queue.add(t);
     notifyListeners();
   }
@@ -37,13 +37,13 @@ class QueueManager extends ChangeNotifier {
     if (index < 0 || index >= _queue.length) return;
     _queueIndex = index;
     var t = _queue[index];
-    _sessionHeard.add(_normalizeKey(t));
+    _sessionHeard.add(_sessionKey(t));
     await audio.play(t);
     notifyListeners();
   }
 
   Future<void> playNow(Track t) async {
-    _sessionHeard.add(_normalizeKey(t));
+    _sessionHeard.add(_sessionKey(t));
     _queue.insert(0, t);
     _queueIndex = 0;
     await audio.play(t);
@@ -92,11 +92,12 @@ class QueueManager extends ChangeNotifier {
       debugPrint('[INJECT] related returned ${related.length} tracks');
       var count = 0;
       for (var r in related) {
+        var sk = _sessionKey(r);
         var nk = _normalizeKey(r);
         var dup = _isDuplicateOfHeard(r);
-        debugPrint('[INJECT] candidate="${r.title}" | "${r.artist}" yt=${r.youtubeId} key="$nk" dup=$dup heardSize=${_sessionHeard.length}');
+        debugPrint('[INJECT] candidate="${r.title}" | "${r.artist}" yt=${r.youtubeId} key="$nk" sk="$sk" dup=$dup heardSize=${_sessionHeard.length}');
         if (dup) continue;
-        _sessionHeard.add(nk);
+        _sessionHeard.add(sk);
         _queue.add(r);
         count++;
         debugPrint('[INJECT] ADDED (count=$count)');
@@ -110,16 +111,24 @@ class QueueManager extends ChangeNotifier {
   }
 
   bool _isDuplicateOfHeard(Track t) {
-    var nk = _normalizeKey(t);
-    if (_sessionHeard.contains(nk)) return true;
+    var tYt = t.youtubeId;
     for (var k in _sessionHeard) {
-      var hTitle = k.split('||')[0];
-      var hArtist = k.split('||').length > 1 ? k.split('||')[1] : '';
+      var parts = k.split('||');
+      if (parts.length >= 3 && parts[0].isNotEmpty && tYt != null && tYt.isNotEmpty && parts[0] == tYt) {
+        debugPrint('[INJECT] yt dup: $tYt');
+        return true;
+      }
+    }
+    var nk = _normalizeKey(t);
+    for (var k in _sessionHeard) {
+      var parts = k.split('||');
+      var kTitle = parts.length >= 3 ? parts[1] : parts[0];
+      var kArtist = parts.length >= 3 ? parts[2] : (parts.length > 1 ? parts[1] : '');
       var nTitle = nk.split('||')[0];
       var nArtist = nk.split('||').length > 1 ? nk.split('||')[1] : '';
-      if (hArtist != nArtist) continue;
-      if (_levenshtein(hTitle, nTitle) <= 2) {
-        debugPrint('[INJECT] fuzzy match: "$hTitle" ~ "$nTitle"');
+      if (kArtist != nArtist) continue;
+      if (_levenshtein(kTitle, nTitle) <= 2) {
+        debugPrint('[INJECT] fuzzy match: "$kTitle" ~ "$nTitle"');
         return true;
       }
     }
@@ -152,6 +161,12 @@ class QueueManager extends ChangeNotifier {
     return prev.last;
   }
 
+  String _sessionKey(Track t) {
+    var yt = t.youtubeId ?? '';
+    var nk = _normalizeKey(t);
+    return '$yt||$nk';
+  }
+
   String _normalizeKey(Track t) {
     var title = t.title
         .replaceAll(RegExp(r'\s*\([^)]*\)\s*$'), '')
@@ -161,7 +176,9 @@ class QueueManager extends ChangeNotifier {
         .trim()
         .toLowerCase();
     var artist = t.artist
-        .replaceAll(RegExp(r'\s*[-–—|•·]\s*(Topic|VEVO|Topic Channel|Official|Audio|Music)\s*$', caseSensitive: false), '')
+        .replaceAllMapped(RegExp(r'([a-z])([A-Z])'), (m) => '${m[1]} ${m[2]}')
+        .replaceAll(RegExp(r'\s*[-–—|•·]\s*(Topic|Topic Channel)\s*$', caseSensitive: false), '')
+        .replaceAll(RegExp(r'\s+VEVO\s*$', caseSensitive: false), '')
         .split(RegExp(r'\s*[,&/]\s*|\s+feat[.\s]|\s+ft[.\s]'))[0]
         .trim()
         .toLowerCase();

@@ -91,20 +91,30 @@ class _PlayerBarState extends State<PlayerBar> {
                   ],
                 ),
               ),
-              state.audio.isLoading
-                  ? const SizedBox(
-                      width: 24,
-                      height: 24,
-                      child: CircularProgressIndicator(
-                          strokeWidth: 2, color: Tmp3App.green))
-                  : IconButton(
-                      icon: Icon(
-                          state.audio.isPlaying
-                              ? Icons.pause_rounded
-                              : Icons.play_arrow_rounded,
-                          color: Tmp3App.txt),
-                      onPressed: () => state.audio.playPause(),
-                    ),
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  state.audio.isLoading
+                      ? const SizedBox(
+                          width: 24,
+                          height: 24,
+                          child: CircularProgressIndicator(
+                              strokeWidth: 2, color: Tmp3App.green))
+                      : IconButton(
+                          icon: Icon(
+                              state.audio.isPlaying
+                                  ? Icons.pause_rounded
+                                  : Icons.play_arrow_rounded,
+                              color: Tmp3App.txt),
+                          onPressed: () => state.audio.playPause(),
+                        ),
+                  IconButton(
+                    icon: const Icon(Icons.skip_next_rounded,
+                        color: Tmp3App.txt),
+                    onPressed: () => state.next(),
+                  ),
+                ],
+              ),
             ],
           ),
           ClipRRect(
