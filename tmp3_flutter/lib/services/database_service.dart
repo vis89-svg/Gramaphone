@@ -10,7 +10,6 @@ class DatabaseService {
 
   static Future<Database> get db async {
     if (_db != null) return _db!;
-    // Initialize FFI for desktop platforms
     if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
       sqfliteFfiInit();
       databaseFactory = databaseFactoryFfi;

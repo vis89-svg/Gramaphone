@@ -1,14 +1,15 @@
 import 'dart:async';
-import 'dart:convert';
-import 'dart:io';
 import 'dart:ui' show VoidCallback;
 import 'package:media_kit/media_kit.dart' hide Track;
 import '../models/track.dart' as model;
+import 'ytdlp_service.dart';
 
 class AudioService {
   static final AudioService _instance = AudioService._();
   factory AudioService() => _instance;
   AudioService._();
+
+  final _ytDlp = YtDlpService();
 
   final player = Player();
 
@@ -68,38 +69,27 @@ class AudioService {
     _complSub = player.stream.completed.listen((_) {
       onTrackCompleted?.call();
     });
+    player.stream.log.listen((l) {
+      print('[MPV] ${l.text}');
+    });
+    player.stream.error.listen((e) {
+      print('[MPV_ERROR] $e');
+    });
   }
 
-  Future<_YtResult?> _getAudioUrl(model.Track t) async {
-    var queries = [
-      '${t.title} ${t.artist} topic',
-      '${t.title} ${t.artist} official audio',
-      '${t.title} ${t.artist} official',
+  Future<String?> _getAudioUrl(model.Track t) async {
+    if (t.youtubeId != null && t.youtubeId!.isNotEmpty) {
+      var url = await _ytDlp.getAudioUrl(t.youtubeId!);
+      if (url != null) return url;
+    }
+    var results = await _ytDlp.search(
       '${t.artist} - ${t.title}',
-      '${t.title} ${t.artist}',
-    ];
-    for (var q in queries) {
-      try {
-        var r = await Process.run('python', [
-          '-m', 'yt_dlp',
-          '--dump-json',
-          '--format', 'bestaudio',
-          '--default-search', 'ytsearch',
-          '--', q,
-        ]);
-        if (r.exitCode == 0) {
-          var line = (r.stdout as String).trim();
-          if (line.isEmpty) continue;
-          var j = json.decode(line);
-          var url = j['url'] as String?;
-          var id = j['id'] as String?;
-          if (url != null && url.isNotEmpty) {
-            return _YtResult(url: url, videoId: id);
-          }
-        }
-      } catch (_) {
-        continue;
-      }
+      limit: 5,
+    );
+    for (var r in results) {
+      if (r.youtubeId == null || r.youtubeId!.isEmpty) continue;
+      var url = await _ytDlp.getAudioUrl(r.youtubeId!);
+      if (url != null) return url;
     }
     return null;
   }
@@ -110,19 +100,21 @@ class AudioService {
     loadingController.add(true);
     trackController.add(t);
     try {
-      var result = await _getAudioUrl(t);
-      if (result == null) {
+      var url = await _getAudioUrl(t);
+      if (url == null) {
         _isLoading = false;
         _playbackError = 'Audio not found on YouTube';
         loadingController.add(false);
         errorController.add('Could not find audio for "${t.title}" by ${t.artist}');
         return;
       }
-      _lastYoutubeId = result.videoId;
+      _lastYoutubeId = t.youtubeId;
+      await player.setVolume(100);
       await player.stop();
-      await player.open(Media(result.url));
-      await player.play();
+      await player.open(Media(url));
       _currentTrack = t;
+      _isPlaying = true;
+      playStateController.add(true);
       _playbackError = null;
     } catch (e) {
       _playbackError = 'Playback error';
@@ -139,8 +131,12 @@ class AudioService {
   Future<void> playPause() async {
     if (_isPlaying) {
       await player.pause();
+      _isPlaying = false;
+      playStateController.add(false);
     } else {
       await player.play();
+      _isPlaying = true;
+      playStateController.add(true);
     }
   }
 
@@ -172,8 +168,4 @@ class AudioService {
   }
 }
 
-class _YtResult {
-  final String url;
-  final String? videoId;
-  _YtResult({required this.url, this.videoId});
-}
+

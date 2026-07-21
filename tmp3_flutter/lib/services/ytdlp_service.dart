@@ -1,77 +1,41 @@
 import 'dart:convert';
 import 'dart:io';
 import '../models/track.dart';
+import 'interfaces/ytdlp_interface.dart';
+import 'innertube_service.dart';
 
-class YtDlpService {
-  static Future<List<Track>> search(String query, {int limit = 8}) async {
-    try {
-      var r = await Process.run('python', [
-        '-m', 'yt_dlp',
-        '--dump-json',
-        '--flat-playlist',
-        '--no-warnings',
-        '--', 'ytsearch$limit:$query',
-      ]);
-      if (r.exitCode != 0) return [];
-      var lines = (r.stdout as String)
-          .split('\n')
-          .where((l) => l.trim().isNotEmpty)
-          .toList();
-      List<Track> results = [];
-      for (var line in lines) {
-        try {
-          var j = json.decode(line);
-          results.add(Track(
-            title: j['title'] ?? '',
-            artist: j['uploader'] ?? j['channel'] ?? 'Unknown',
-            album: j['album'] ?? '',
-            artworkUrl: j['thumbnail'] ?? '',
-            duration: (j['duration'] ?? 0) is int
-                ? j['duration'] as int
-                : int.tryParse('${j['duration']}') ?? 0,
-            youtubeId: j['id'] as String?,
-          ));
-        } catch (_) {}
-      }
-      return results;
-    } catch (_) {
-      return [];
-    }
+class YtDlpService implements YtDlpInterface {
+  static final YtDlpService _instance = YtDlpService._();
+  factory YtDlpService() => _instance;
+  YtDlpService._();
+
+  final _innerTube = InnerTubeService();
+
+  @override
+  Future<List<Track>> search(String query, {int limit = 8}) async {
+    return _innerTube.search(query, limit: limit);
   }
 
-  static Future<List<Track>> getRelated(String videoId, {int limit = 8}) async {
+  @override
+  Future<List<Track>> getRelated(String videoId, {int limit = 8}) async {
+    return _innerTube.getRelated(videoId, limit: limit);
+  }
+
+  @override
+  Future<String?> getAudioUrl(String videoId) async {
     try {
       var r = await Process.run('python', [
         '-m', 'yt_dlp',
-        '--dump-json',
-        '--flat-playlist',
-        '--no-warnings',
-        '--', 'https://www.youtube.com/watch?v=$videoId&list=RD$videoId',
+        '--get-url',
+        '--format', 'bestaudio[ext=m4a]/bestaudio',
+        '--', 'https://www.youtube.com/watch?v=$videoId',
       ]);
-      if (r.exitCode != 0) return [];
-      var lines = (r.stdout as String)
-          .split('\n')
-          .where((l) => l.trim().isNotEmpty)
-          .toList();
-      List<Track> results = [];
-      for (var line in lines.skip(1).take(limit)) {
-        try {
-          var e = json.decode(line);
-          results.add(Track(
-            title: e['title'] ?? '',
-            artist: e['uploader'] ?? e['channel'] ?? 'Unknown',
-            album: '',
-            artworkUrl: e['thumbnail'] ?? '',
-            duration: (e['duration'] ?? 0) is int
-                ? e['duration'] as int
-                : int.tryParse('${e['duration']}') ?? 0,
-            youtubeId: e['id'] as String?,
-          ));
-        } catch (_) {}
-      }
-      return results;
+      if (r.exitCode != 0) return null;
+      var url = (r.stdout as String).trim();
+      if (url.isEmpty) return null;
+      return url;
     } catch (_) {
-      return [];
+      return null;
     }
   }
 }

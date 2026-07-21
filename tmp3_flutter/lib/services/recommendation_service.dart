@@ -3,7 +3,6 @@ import '../models/track.dart';
 import 'database_service.dart';
 import 'itunes_service.dart';
 import 'ytdlp_service.dart';
-import 'audio_service.dart';
 
 class RecommendationService {
   static final Map<String, String?> _genreCache = {};
@@ -220,7 +219,7 @@ class RecommendationService {
 
     // YouTube Next / anchor-based (Echo Music style)
     if (anchorYoutubeId != null) {
-      var related = await YtDlpService.getRelated(anchorYoutubeId);
+      var related = await YtDlpService().getRelated(anchorYoutubeId);
       for (var s in related) {
         if (ok(s)) {
           artistSongCount[s.artist] = (artistSongCount[s.artist] ?? 0) + 1;
@@ -228,7 +227,7 @@ class RecommendationService {
         }
       }
     } else if (anchorTrack != null) {
-      var related = await YtDlpService.search(
+      var related = await YtDlpService().search(
           '${anchorTrack.title} ${anchorTrack.artist}', limit: 6);
       for (var s in related) {
         if (ok(s)) {
@@ -240,7 +239,7 @@ class RecommendationService {
 
     // YouTube genre search (replaces iTunes genre search)
     for (var g in topGenres.take(2)) {
-      var songs = await YtDlpService.search(g, limit: 6);
+      var songs = await YtDlpService().search(g, limit: 6);
       for (var s in songs) {
         if (ok(s)) {
           artistSongCount[s.artist] = (artistSongCount[s.artist] ?? 0) + 1;
@@ -251,7 +250,7 @@ class RecommendationService {
 
     // Affinity artist songs from YouTube
     for (var a in affArtists.take(3)) {
-      var songs = await YtDlpService.search(a, limit: 4);
+      var songs = await YtDlpService().search(a, limit: 4);
       for (var s in songs) {
         if (ok(s)) {
           artistSongCount[s.artist] = (artistSongCount[s.artist] ?? 0) + 1;
