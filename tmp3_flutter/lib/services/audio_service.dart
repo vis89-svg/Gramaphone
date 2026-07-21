@@ -80,7 +80,10 @@ class AudioService {
   Future<String?> _getAudioUrl(model.Track t) async {
     if (t.youtubeId != null && t.youtubeId!.isNotEmpty) {
       var url = await _ytDlp.getAudioUrl(t.youtubeId!);
-      if (url != null) return url;
+      if (url != null) {
+        _lastYoutubeId = t.youtubeId;
+        return url;
+      }
     }
     var results = await _ytDlp.search(
       '${t.artist} - ${t.title}',
@@ -89,7 +92,10 @@ class AudioService {
     for (var r in results) {
       if (r.youtubeId == null || r.youtubeId!.isEmpty) continue;
       var url = await _ytDlp.getAudioUrl(r.youtubeId!);
-      if (url != null) return url;
+      if (url != null) {
+        _lastYoutubeId = r.youtubeId;
+        return url;
+      }
     }
     return null;
   }
@@ -108,7 +114,6 @@ class AudioService {
         errorController.add('Could not find audio for "${t.title}" by ${t.artist}');
         return;
       }
-      _lastYoutubeId = t.youtubeId;
       await player.setVolume(100);
       await player.stop();
       await player.open(Media(url));

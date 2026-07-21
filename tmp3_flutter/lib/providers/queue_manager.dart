@@ -12,6 +12,8 @@ class QueueManager extends ChangeNotifier {
   final List<Track> _queue = [];
   int _queueIndex = -1;
 
+  final Set<String> _sessionHeard = {};
+
   List<Track> get queue => _queue;
   int get queueIndex => _queueIndex;
   Track? get currentTrack =>
@@ -20,17 +22,14 @@ class QueueManager extends ChangeNotifier {
           : null;
 
   void enqueue(Track t) {
+    _sessionHeard.add(_normalizeKey(t));
     _queue.add(t);
     notifyListeners();
   }
 
   void enqueueNext(Track t) {
-    var idx = _queueIndex + 1;
-    if (idx >= _queue.length) {
-      _queue.add(t);
-    } else {
-      _queue.insert(idx, t);
-    }
+    _sessionHeard.add(_normalizeKey(t));
+    _queue.add(t);
     notifyListeners();
   }
 
@@ -38,11 +37,13 @@ class QueueManager extends ChangeNotifier {
     if (index < 0 || index >= _queue.length) return;
     _queueIndex = index;
     var t = _queue[index];
+    _sessionHeard.add(_normalizeKey(t));
     await audio.play(t);
     notifyListeners();
   }
 
   Future<void> playNow(Track t) async {
+    _sessionHeard.add(_normalizeKey(t));
     _queue.insert(0, t);
     _queueIndex = 0;
     await audio.play(t);
@@ -80,25 +81,90 @@ class QueueManager extends ChangeNotifier {
       var anchorTrack = currentTrack;
       if (anchorTrack == null) return;
       var vid = audio.lastYoutubeId;
+      debugPrint('[INJECT] anchor="${anchorTrack.title}" vid=$vid idx=$_queueIndex len=${_queue.length}');
       List<Track> related;
       if (vid != null) {
-        related = await ytDlp.getRelated(vid, limit: 6);
+        related = await ytDlp.getRelated(vid, limit: 12);
       } else {
         related = await ytDlp.search(
-            '${anchorTrack.title} ${anchorTrack.artist}', limit: 6);
+            '${anchorTrack.title} ${anchorTrack.artist}', limit: 12);
       }
-      var heard = <String>{};
-      for (var q in _queue) {
-        heard.add(q.dbKey);
-      }
+      debugPrint('[INJECT] related returned ${related.length} tracks');
       var count = 0;
       for (var r in related) {
-        if (heard.add(r.dbKey)) {
-          enqueueNext(r);
-          count++;
-        }
+        var nk = _normalizeKey(r);
+        var dup = _isDuplicateOfHeard(r);
+        debugPrint('[INJECT] candidate="${r.title}" | "${r.artist}" yt=${r.youtubeId} key="$nk" dup=$dup heardSize=${_sessionHeard.length}');
+        if (dup) continue;
+        _sessionHeard.add(nk);
+        _queue.add(r);
+        count++;
+        debugPrint('[INJECT] ADDED (count=$count)');
         if (count >= 3) break;
       }
-    } catch (_) {}
+      debugPrint('[INJECT] done — added $count tracks');
+      notifyListeners();
+    } catch (e) {
+      debugPrint('[INJECT] error: $e');
+    }
+  }
+
+  bool _isDuplicateOfHeard(Track t) {
+    var nk = _normalizeKey(t);
+    if (_sessionHeard.contains(nk)) return true;
+    for (var k in _sessionHeard) {
+      var hTitle = k.split('||')[0];
+      var hArtist = k.split('||').length > 1 ? k.split('||')[1] : '';
+      var nTitle = nk.split('||')[0];
+      var nArtist = nk.split('||').length > 1 ? nk.split('||')[1] : '';
+      if (hArtist != nArtist) continue;
+      if (_levenshtein(hTitle, nTitle) <= 2) {
+        debugPrint('[INJECT] fuzzy match: "$hTitle" ~ "$nTitle"');
+        return true;
+      }
+    }
+    return false;
+  }
+
+  int _levenshtein(String a, String b) {
+    if (a.length < b.length) {
+      var tmp = a;
+      a = b;
+      b = tmp;
+    }
+    if (b.isEmpty) return a.length;
+    var prev = List<int>.generate(b.length + 1, (i) => i);
+    var curr = List<int>.filled(b.length + 1, 0);
+    for (var i = 0; i < a.length; i++) {
+      curr[0] = i + 1;
+      for (var j = 0; j < b.length; j++) {
+        var cost = a[i] == b[j] ? 0 : 1;
+        curr[j + 1] = [
+          curr[j] + 1,
+          prev[j + 1] + 1,
+          prev[j] + cost,
+        ].reduce((x, y) => x < y ? x : y);
+      }
+      var tmp = prev;
+      prev = curr;
+      curr = tmp;
+    }
+    return prev.last;
+  }
+
+  String _normalizeKey(Track t) {
+    var title = t.title
+        .replaceAll(RegExp(r'\s*\([^)]*\)\s*$'), '')
+        .replaceAll(RegExp(r'\s*\[[^\]]*\]\s*$'), '')
+        .replaceAll(RegExp(r'\s*[-–—|]\s*Official\s+(Video|Audio|Music|Lyrics).*$', caseSensitive: false), '')
+        .replaceAll(RegExp(r'\s*\(Official\s+(Video|Audio|Music|Lyrics).*$', caseSensitive: false), '')
+        .trim()
+        .toLowerCase();
+    var artist = t.artist
+        .replaceAll(RegExp(r'\s*[-–—|•·]\s*(Topic|VEVO|Topic Channel|Official|Audio|Music)\s*$', caseSensitive: false), '')
+        .split(RegExp(r'\s*[,&/]\s*|\s+feat[.\s]|\s+ft[.\s]'))[0]
+        .trim()
+        .toLowerCase();
+    return '$title||$artist';
   }
 }
