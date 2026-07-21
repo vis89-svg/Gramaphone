@@ -4,6 +4,8 @@ import '../providers/app_state.dart';
 import '../models/track.dart';
 import '../services/database_service.dart';
 import '../services/itunes_service.dart';
+import 'artist_screen.dart';
+import 'album_screen.dart';
 import '../app.dart';
 
 enum SearchFilter { all, songs, artists, albums }
@@ -258,7 +260,9 @@ class _SearchScreenState extends State<SearchScreen> {
               style: const TextStyle(color: Tmp3App.txt3, fontSize: 10)),
           const SizedBox(height: 4),
           TextButton(
-            onPressed: () => _showArtistSongs(name),
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => ArtistScreen(artist: name))),
             child: const Text('View Songs',
                 style: TextStyle(color: Tmp3App.green, fontSize: 10)),
           ),
@@ -271,45 +275,47 @@ class _SearchScreenState extends State<SearchScreen> {
     var name = x['collectionName'] as String? ?? '';
     var artist = x['artistName'] as String? ?? '';
     var art = x['artworkUrl100'] as String? ?? '';
-    var cid = x['collectionId']?.toString();
-    return Container(
-      width: 140,
-      margin: const EdgeInsets.only(right: 10),
-      decoration: BoxDecoration(
-        color: Tmp3App.card,
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Container(
-            width: 56,
-            height: 56,
-            decoration: BoxDecoration(
-              color: Tmp3App.elev,
-              borderRadius: BorderRadius.circular(8),
+    return GestureDetector(
+      onTap: () => Navigator.push(
+        context,
+        MaterialPageRoute(builder: (_) => AlbumScreen(
+          albumTitle: name,
+          artist: artist,
+        ))),
+      child: Container(
+        width: 140,
+        margin: const EdgeInsets.only(right: 10),
+        decoration: BoxDecoration(
+          color: Tmp3App.card,
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Container(
+              width: 56,
+              height: 56,
+              decoration: BoxDecoration(
+                color: Tmp3App.elev,
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: art.isNotEmpty
+                  ? ClipRRect(
+                      borderRadius: BorderRadius.circular(8),
+                      child: Image.network(art, fit: BoxFit.cover, errorBuilder: (_, __, ___) => const Icon(Icons.album, color: Tmp3App.txt3)),
+                    )
+                  : const Icon(Icons.album, color: Tmp3App.txt3),
             ),
-            child: art.isNotEmpty
-                ? ClipRRect(
-                    borderRadius: BorderRadius.circular(8),
-                    child: Image.network(art, fit: BoxFit.cover, errorBuilder: (_, __, ___) => const Icon(Icons.album, color: Tmp3App.txt3)),
-                  )
-                : const Icon(Icons.album, color: Tmp3App.txt3),
-          ),
-          const SizedBox(height: 8),
-          Text(name,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
-                  color: Tmp3App.txt, fontWeight: FontWeight.w600)),
-          Text(artist,
-              style: const TextStyle(color: Tmp3App.txt3, fontSize: 10)),
-          TextButton(
-            onPressed: () => _showAlbumTracks(name, artist, collectionId: cid),
-            child: const Text('View Tracks',
-                style: TextStyle(color: Tmp3App.green, fontSize: 10)),
-          ),
-        ],
+            const SizedBox(height: 8),
+            Text(name,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                    color: Tmp3App.txt, fontWeight: FontWeight.w600)),
+            Text(artist,
+                style: const TextStyle(color: Tmp3App.txt3, fontSize: 10)),
+          ],
+        ),
       ),
     );
   }
@@ -319,7 +325,9 @@ class _SearchScreenState extends State<SearchScreen> {
     var genre = x['primaryGenreName'] as String? ?? '';
     var isFav = _favArtists.contains(name);
     return InkWell(
-      onTap: () => _showArtistSongs(name),
+      onTap: () => Navigator.push(
+        context,
+        MaterialPageRoute(builder: (_) => ArtistScreen(artist: name))),
       child: Container(
         padding: const EdgeInsets.all(12),
         margin: const EdgeInsets.only(bottom: 6),
@@ -371,9 +379,13 @@ class _SearchScreenState extends State<SearchScreen> {
     var name = x['collectionName'] as String? ?? '';
     var artist = x['artistName'] as String? ?? '';
     var art = x['artworkUrl100'] as String? ?? '';
-    var cid = x['collectionId']?.toString();
     return InkWell(
-      onTap: () => _showAlbumTracks(name, artist, collectionId: cid),
+      onTap: () => Navigator.push(
+        context,
+        MaterialPageRoute(builder: (_) => AlbumScreen(
+          albumTitle: name,
+          artist: artist,
+        ))),
       child: Container(
         padding: const EdgeInsets.all(12),
         margin: const EdgeInsets.only(bottom: 6),
@@ -492,89 +504,4 @@ class _SearchScreenState extends State<SearchScreen> {
     );
   }
 
-  void _showArtistSongs(String artist) {
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: Tmp3App.bg,
-      builder: (_) => _TrackListSheet(
-        title: artist,
-        future: ItunesService.getArtistTopSongs(artist),
-      ),
-    );
-  }
-
-  void _showAlbumTracks(String album, String artist, {String? collectionId}) {
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: Tmp3App.bg,
-      builder: (_) => _TrackListSheet(
-        title: album,
-        future: ItunesService.getAlbumTracks(album, artist, collectionId: collectionId),
-      ),
-    );
-  }
-}
-
-class _TrackListSheet extends StatelessWidget {
-  final String title;
-  final Future<List<Track>> future;
-
-  const _TrackListSheet({required this.title, required this.future});
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      height: MediaQuery.of(context).size.height * 0.6,
-      padding: const EdgeInsets.all(16),
-      child: Column(
-        children: [
-          Text(title,
-              style: const TextStyle(
-                  color: Tmp3App.txt,
-                  fontSize: 18,
-                  fontWeight: FontWeight.bold)),
-          const SizedBox(height: 12),
-          Expanded(
-            child: FutureBuilder<List<Track>>(
-              future: future,
-              builder: (_, snap) {
-                if (!snap.hasData) {
-                  return const Center(
-                      child: CircularProgressIndicator(color: Tmp3App.green));
-                }
-                var tracks = snap.data!;
-                if (tracks.isEmpty) {
-                  return const Center(
-                      child: Text('No tracks found',
-                          style: TextStyle(color: Tmp3App.txt3)));
-                }
-                return ListView.builder(
-                  itemCount: tracks.length,
-                  itemBuilder: (_, i) {
-                    var t = tracks[i];
-                    return ListTile(
-                      leading: Text('${i + 1}',
-                          style: const TextStyle(color: Tmp3App.txt3)),
-                      title: Text(t.title,
-                          style: const TextStyle(color: Tmp3App.txt)),
-                      subtitle: Text(t.album,
-                          style: const TextStyle(color: Tmp3App.txt3)),
-                      trailing: IconButton(
-                        icon: const Icon(Icons.play_arrow,
-                            color: Tmp3App.green),
-                        onPressed: () {
-                          context.read<AppState>().playNow(t);
-                          Navigator.pop(context);
-                        },
-                      ),
-                    );
-                  },
-                );
-              },
-            ),
-          ),
-        ],
-      ),
-    );
-  }
 }

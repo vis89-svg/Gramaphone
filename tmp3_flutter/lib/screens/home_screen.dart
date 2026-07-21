@@ -2,7 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../providers/app_state.dart';
 import '../models/track.dart';
-import '../services/itunes_service.dart';
+import 'mix_screen.dart';
+import 'artist_screen.dart';
 import '../app.dart';
 
 class HomeScreen extends StatefulWidget {
@@ -306,7 +307,10 @@ class _HomeScreenState extends State<HomeScreen> {
               style: const TextStyle(color: Tmp3App.txt3, fontSize: 10)),
           const SizedBox(height: 4),
           TextButton(
-            onPressed: () => _showArtistSongs(name),
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => ArtistScreen(artist: name)),
+            ),
             child: const Text('View Songs',
                 style: TextStyle(color: Tmp3App.green, fontSize: 10)),
           ),
@@ -317,7 +321,10 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Widget _albumCard(Track t) {
     return GestureDetector(
-      onTap: () => context.read<AppState>().playNow(t),
+      onTap: () => Navigator.push(
+        context,
+        MaterialPageRoute(builder: (_) => MixScreen(artist: t.artist)),
+      ),
       child: Container(
         width: 140,
         margin: const EdgeInsets.only(right: 10),
@@ -453,156 +460,10 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   void _showMixSheet(String artist) {
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: Tmp3App.bg,
-      isScrollControlled: true,
-      builder: (ctx) {
-        var state = context.read<AppState>();
-        return FutureBuilder<List<Track>>(
-          future: state.ytDlp.search(artist, limit: 20).then((tracks) =>
-            tracks.where((t) => t.duration > 30 && t.duration < 600).take(15).toList()),
-          builder: (_, snap) {
-            if (!snap.hasData) {
-              return SizedBox(
-                height: 300,
-                child: const Center(child: CircularProgressIndicator(color: Tmp3App.green)),
-              );
-            }
-            var songs = snap.data!;
-            if (songs.isEmpty) {
-              return SizedBox(
-                height: 200,
-                child: Center(
-                  child: Text('No songs found for $artist',
-                      style: const TextStyle(color: Tmp3App.txt3)),
-                ),
-              );
-            }
-            return Container(
-              height: MediaQuery.of(context).size.height * 0.65,
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                children: [
-                  Text('$artist Mix',
-                      style: const TextStyle(
-                          color: Tmp3App.txt,
-                          fontSize: 18,
-                          fontWeight: FontWeight.bold)),
-                  const SizedBox(height: 4),
-                  Text('${songs.length} songs',
-                      style: const TextStyle(color: Tmp3App.txt3, fontSize: 12)),
-                  const SizedBox(height: 12),
-                  Expanded(
-                    child: ListView.builder(
-                      itemCount: songs.length,
-                      itemBuilder: (_, i) {
-                        var t = songs[i];
-                        return ListTile(
-                          leading: Text('${i + 1}',
-                              style: const TextStyle(color: Tmp3App.txt3)),
-                          title: Text(t.title,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(color: Tmp3App.txt)),
-                          subtitle: Text(t.artist,
-                              style: const TextStyle(color: Tmp3App.txt3, fontSize: 11)),
-                          trailing: const Icon(Icons.play_circle_outline,
-                              color: Tmp3App.green, size: 24),
-                          onTap: () {
-                            state.clearQueue();
-                            state.playNow(songs[i]);
-                            for (var j = 0; j < songs.length; j++) {
-                              if (j != i) state.enqueue(songs[j]);
-                            }
-                            Navigator.pop(ctx);
-                          },
-                        );
-                      },
-                    ),
-                  ),
-                ],
-              ),
-            );
-          },
-        );
-      },
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => MixScreen(artist: artist)),
     );
   }
 
-  void _showArtistSongs(String artist) {
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: Tmp3App.bg,
-      builder: (_) => _TrackListSheet(
-        title: artist,
-        future: ItunesService.getArtistTopSongs(artist),
-      ),
-    );
-  }
-
-}
-
-class _TrackListSheet extends StatelessWidget {
-  final String title;
-  final Future<List<Track>> future;
-
-  const _TrackListSheet({required this.title, required this.future});
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      height: MediaQuery.of(context).size.height * 0.6,
-      padding: const EdgeInsets.all(16),
-      child: Column(
-        children: [
-          Text(title,
-              style: const TextStyle(
-                  color: Tmp3App.txt,
-                  fontSize: 18,
-                  fontWeight: FontWeight.bold)),
-          const SizedBox(height: 12),
-          Expanded(
-            child: FutureBuilder<List<Track>>(
-              future: future,
-              builder: (_, snap) {
-                if (!snap.hasData) {
-                  return const Center(
-                      child: CircularProgressIndicator(color: Tmp3App.green));
-                }
-                var tracks = snap.data!;
-                if (tracks.isEmpty) {
-                  return const Center(
-                      child: Text('No tracks found',
-                          style: TextStyle(color: Tmp3App.txt3)));
-                }
-                return ListView.builder(
-                  itemCount: tracks.length,
-                  itemBuilder: (_, i) {
-                    var t = tracks[i];
-                    return ListTile(
-                      leading: Text('${i + 1}',
-                          style: const TextStyle(color: Tmp3App.txt3)),
-                      title: Text(t.title,
-                          style: const TextStyle(color: Tmp3App.txt)),
-                      subtitle: Text(t.album,
-                          style: const TextStyle(color: Tmp3App.txt3)),
-                      trailing: IconButton(
-                        icon: const Icon(Icons.play_arrow,
-                            color: Tmp3App.green),
-                        onPressed: () {
-                          context.read<AppState>().playNow(t);
-                          Navigator.pop(context);
-                        },
-                      ),
-                    );
-                  },
-                );
-              },
-            ),
-          ),
-        ],
-      ),
-    );
-  }
 }

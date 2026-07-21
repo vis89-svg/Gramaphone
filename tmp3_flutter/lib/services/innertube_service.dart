@@ -20,7 +20,7 @@ class InnerTubeService {
   final Map<String, List<Track>> _relatedCache = {};
 
   Future<List<Track>> search(String query, {int limit = 8}) async {
-    var key = 'search:$query';
+    var key = 'search:$query:$limit';
     if (_searchCache.containsKey(key)) {
       return _searchCache[key]!.take(limit).toList();
     }
@@ -117,6 +117,43 @@ class InnerTubeService {
       }
       _relatedCache[cacheKey] = tracks;
       return tracks;
+    } catch (_) {
+      return [];
+    }
+  }
+
+  Future<List<Map<String, dynamic>>> searchPlaylists(String query, {int limit = 8}) async {
+    try {
+      var results = await _yt.search.searchContent(query, filter: TypeFilters.playlist);
+      var playlists = <Map<String, dynamic>>[];
+      for (var r in results) {
+        if (playlists.length >= limit) break;
+        if (r is SearchPlaylist) {
+          var thumb = r.thumbnails.isNotEmpty ? r.thumbnails.last.url : '';
+          playlists.add({
+            'title': r.title,
+            'playlistId': r.id.value,
+            'videoCount': r.videoCount,
+            'thumbnailUrl': thumb,
+          });
+        }
+      }
+      return playlists;
+    } catch (_) {
+      return [];
+    }
+  }
+
+  Future<List<Track>> getPlaylistVideos(String playlistId) async {
+    try {
+      var videos = await _yt.playlists.getVideos(playlistId).toList();
+      return videos.map((v) => Track(
+                title: v.title,
+                artist: v.author,
+                duration: v.duration?.inSeconds ?? 0,
+                artworkUrl: v.thumbnails.highResUrl,
+                youtubeId: v.id.value,
+              )).toList();
     } catch (_) {
       return [];
     }

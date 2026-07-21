@@ -21,6 +21,16 @@ class YtDlpService implements YtDlpInterface {
   }
 
   @override
+  Future<List<Map<String, dynamic>>> searchPlaylists(String query, {int limit = 8}) async {
+    return _innerTube.searchPlaylists(query, limit: limit);
+  }
+
+  @override
+  Future<List<Track>> getPlaylistVideos(String playlistId) async {
+    return _innerTube.getPlaylistVideos(playlistId);
+  }
+
+  @override
   Future<String?> getAudioUrl(String videoId) async {
     try {
       var r = await Process.run('python', [
