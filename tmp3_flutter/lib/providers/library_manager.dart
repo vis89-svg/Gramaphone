@@ -129,10 +129,19 @@ class LibraryManager extends ChangeNotifier {
 
   Future<void> fetchNewReleases(int profileId, {YtDlpInterface? ytDlp}) async {
     try {
-      var artists = await database.getProfileArtists(profileId);
+      var topAffs = await database.getAffinities(profileId, limit: 20);
+      var topArtists = topAffs.map((a) => a['artist_name'] as String).toList();
+      var followed = await database.getProfileArtists(profileId);
+      // Merge: top artists first, then followed, deduplicate preserving order
+      var all = <String>[];
+      var seen = <String>{};
+      for (var a in [...topArtists, ...followed]) {
+        if (seen.add(a)) all.add(a);
+      }
+
       _newReleases = [];
-      Set<String> seen = {};
-      for (var artist in artists.take(5)) {
+      Set<String> dedup = {};
+      for (var artist in all.take(10)) {
         if (ytDlp == null) {
           var art = await ItunesService.getArtistArtwork(artist);
           _newReleases.add(Track(
@@ -143,9 +152,9 @@ class LibraryManager extends ChangeNotifier {
           ));
           continue;
         }
-        var results = await ytDlp.searchAudio('$artist new', limit: 5);
-        for (var t in results) {
-          if (t.duration > 30 && t.duration < 600 && seen.add(t.dbKey)) {
+        var topic = await ytDlp.searchAudio(artist, limit: 3);
+        for (var t in topic) {
+          if (t.duration > 30 && t.duration < 600 && dedup.add(t.dbKey)) {
             _newReleases.add(t);
           }
         }
