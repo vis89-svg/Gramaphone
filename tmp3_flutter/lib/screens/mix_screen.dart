@@ -72,40 +72,54 @@ class _MixScreenState extends State<MixScreen> {
       // ── Radio mode: 50-track buffer with drift ──────────────────────
       var seedArtist = widget.artist;
 
-      // Phase 1: tight — seed artist topic channel tracks
-      var primary = await yt.searchAudio(seedArtist, limit: 15);
-      var phase1 = primary.where((t) => t.duration > 30 && t.duration < 600).toList();
-      var rng = Random();
-      phase1.shuffle(rng);
+      // Phase 1: seed artist's top tracks (topic + general search for variety)
+      var topic = await yt.searchAudio(seedArtist, limit: 20);
+      var hits = await yt.search(seedArtist, limit: 10);
+      var seedTracks = [
+        ...topic,
+        ...hits,
+      ].where((t) => t.duration > 30 && t.duration < 600).toList();
+      var seenSeed = <String>{};
+      var topHits = <Track>[];
+      for (var t in seedTracks) {
+        if (seenSeed.add(t.dbKey)) topHits.add(t);
+      }
 
-      var allTracks = <Track>[];
+      // Place 2-3 signature tracks at the very start to anchor the radio
+      var rng = Random();
+      var anchorCount = topHits.length >= 3 ? 3 : (topHits.length >= 2 ? 2 : 1);
+      var anchor = topHits.take(anchorCount).toList();
+      anchor.shuffle(rng);
+
+      var allTracks = [...anchor];
       var seen = <String>{};
-      for (var t in phase1) {
-        if (allTracks.length >= 10) break;
-        if (seen.add(t.dbKey)) allTracks.add(t);
+      for (var t in anchor) { seen.add(t.dbKey); }
+
+      // Remaining seed tracks go into the pool
+      var remainingSeed = <Track>[];
+      for (var t in topHits.skip(anchorCount)) {
+        if (seen.add(t.dbKey)) remainingSeed.add(t);
       }
 
       // Get related from first video
       List<Track> related = [];
-      if (phase1.isNotEmpty) {
-        var firstId = phase1.first.youtubeId ?? phase1.last.youtubeId;
-        if (firstId != null && firstId.isNotEmpty) {
-          var rel = await yt.getRelated(firstId, limit: 30);
-          related = rel.where((t) => t.duration > 30 && t.duration < 600 && seen.add(t.dbKey)).toList();
-        }
+      var firstId = topHits.first.youtubeId ?? (topHits.length > 1 ? topHits.last.youtubeId : null);
+      if (firstId != null && firstId.isNotEmpty) {
+        var rel = await yt.getRelated(firstId, limit: 30);
+        related = rel.where((t) => t.duration > 30 && t.duration < 600).toList();
       }
 
-      // Phase 2: interleave seed artist + related (tight but expanding)
+      // Phase 2: interleave remaining seed + related (tight but expanding)
       int p = 0, r = 0;
       while (allTracks.length < 25) {
-        if (p < phase1.length) {
-          if (seen.add(phase1[p].dbKey)) allTracks.add(phase1[p]);
+        if (p < remainingSeed.length) {
+          if (seen.add(remainingSeed[p].dbKey)) allTracks.add(remainingSeed[p]);
           p++;
         }
         for (var i = 0; i < 2 && r < related.length && allTracks.length < 25; i++, r++) {
           if (seen.add(related[r].dbKey)) allTracks.add(related[r]);
         }
-        if (p >= phase1.length && r >= related.length) break;
+        if (p >= remainingSeed.length && r >= related.length) break;
       }
 
       // Phase 3: genre-similar artists from affinity (wider)
@@ -128,20 +142,23 @@ class _MixScreenState extends State<MixScreen> {
         }
       }
 
-      // Phase 4: fill up to 50 with remaining related + more primary
+      // Phase 4: fill up to 50 with remaining related + remaining seed
       while (allTracks.length < 50) {
         if (r < related.length) {
           if (seen.add(related[r].dbKey)) allTracks.add(related[r]);
           r++;
-        } else if (p < phase1.length) {
-          if (seen.add(phase1[p].dbKey)) allTracks.add(phase1[p]);
+        } else if (p < remainingSeed.length) {
+          if (seen.add(remainingSeed[p].dbKey)) allTracks.add(remainingSeed[p]);
           p++;
         } else {
           break;
         }
       }
 
-      allTracks.shuffle(rng);
+      // Shuffle everything after the anchor tracks for variety
+      var afterAnchor = allTracks.skip(anchorCount).toList();
+      afterAnchor.shuffle(rng);
+      allTracks = [...allTracks.take(anchorCount), ...afterAnchor];
       if (mounted) setState(() { _songs = allTracks; _loading = false; });
     } catch (e) {
       debugPrint('[MIX] load error: $e');

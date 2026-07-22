@@ -155,9 +155,37 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
               const SizedBox(height: 24),
             ],
+            if (state.moodStations.isNotEmpty) ...[
+              _sectionHeader('Mood Stations'),
+              SizedBox(
+                height: 160,
+                child: ListView.builder(
+                  scrollDirection: Axis.horizontal,
+                  itemCount: state.moodStations.length,
+                  itemBuilder: (_, i) {
+                    var m = state.moodStations[i];
+                    return _artCard(m, () {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(builder: (_) => MixScreen(
+                          artist: m.title,
+                          seedTrack: Track(title: m.title, artist: m.artist),
+                        )),
+                      );
+                    });
+                  },
+                ),
+              ),
+              const SizedBox(height: 24),
+            ],
             if (state.newReleases.isNotEmpty) ...[
               _sectionHeader('New Releases'),
               ...state.newReleases.take(12).map((n) => _songRow(n)),
+              const SizedBox(height: 24),
+            ],
+            if (state.releaseRadar.isNotEmpty) ...[
+              _sectionHeader('Release Radar'),
+              ...state.releaseRadar.take(12).map((n) => _songRow(n)),
               const SizedBox(height: 24),
             ],
             if (sug['artists'] != null && (sug['artists'] as List).isNotEmpty) ...[

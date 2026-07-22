@@ -66,6 +66,8 @@ class AppState extends ChangeNotifier {
   List<Track> get forYouMixes => library.forYouMixes;
   Map<String, List<String>> get forYouClusters => library.forYouClusters;
   List<Track> get newReleases => library.newReleases;
+  List<Track> get moodStations => library.moodStations;
+  List<Track> get releaseRadar => library.releaseRadar;
 
   // --- Coordinated operations ---
 
@@ -105,7 +107,9 @@ class AppState extends ChangeNotifier {
       );
       await library.generateArtistMixes(pid);
       await library.generateForYouMixes(pid);
+      library.generateMoodStations();
       await library.fetchNewReleases(pid, ytDlp: queueMgr.ytDlp);
+      await library.generateReleaseRadar(pid, ytDlp: queueMgr.ytDlp);
     } catch (e) {
       debugPrint('[REFRESH] error: $e');
     }

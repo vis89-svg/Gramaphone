@@ -19,6 +19,9 @@ class LibraryManager extends ChangeNotifier {
   List<Track> _forYouMixes = [];
   Map<String, List<String>> _forYouClusters = {};
 
+  List<Track> _moodStations = [];
+  List<Track> _releaseRadar = [];
+
   Map<String, dynamic> get suggestions => _suggestions;
   List<Map<String, dynamic>> get recentlyPlayed => _recentlyPlayed;
   List<Map<String, dynamic>> get heavyRotation => _heavyRotation;
@@ -27,6 +30,8 @@ class LibraryManager extends ChangeNotifier {
   List<Track> get newReleases => _newReleases;
   List<Track> get forYouMixes => _forYouMixes;
   Map<String, List<String>> get forYouClusters => _forYouClusters;
+  List<Track> get moodStations => _moodStations;
+  List<Track> get releaseRadar => _releaseRadar;
 
   Future<void> refresh({
     int? profileId,
@@ -161,6 +166,52 @@ class LibraryManager extends ChangeNotifier {
       }
     } catch (e) {
       debugPrint('[LIB] newReleases error: $e');
+    }
+    notifyListeners();
+  }
+
+  static const _moods = {
+    'Focus': 'focus music for concentration no lyrics',
+    'Chill': 'chill vibes lo-fi relax',
+    'Workout': 'workout motivation energy',
+    'Sleep': 'sleep music calm peaceful',
+    'Mood Booster': 'happy upbeat feel good',
+    'Sad': 'sad songs melancholic',
+  };
+
+  void generateMoodStations() {
+    _moodStations = _moods.entries.map((e) => Track(
+      title: e.key,
+      artist: e.value,
+      collectionId: 'mood_${e.key}',
+    )).toList();
+    notifyListeners();
+  }
+
+  Future<void> generateReleaseRadar(int profileId, {YtDlpInterface? ytDlp}) async {
+    try {
+      var topAffs = await database.getAffinities(profileId, limit: 20);
+      var topArtists = topAffs.map((a) => a['artist_name'] as String).toList();
+      var followed = await database.getProfileArtists(profileId);
+      var all = <String>[];
+      var seen = <String>{};
+      for (var a in [...topArtists, ...followed]) {
+        if (seen.add(a)) all.add(a);
+      }
+
+      _releaseRadar = [];
+      Set<String> dedup = {};
+      for (var artist in all.take(15)) {
+        if (ytDlp == null) continue;
+        var results = await ytDlp.searchAudio(artist, limit: 2);
+        for (var t in results) {
+          if (t.duration > 30 && t.duration < 600 && dedup.add(t.dbKey)) {
+            _releaseRadar.add(t);
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint('[LIB] releaseRadar error: $e');
     }
     notifyListeners();
   }

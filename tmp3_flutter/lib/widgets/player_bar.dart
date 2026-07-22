@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../models/track.dart';
 import '../providers/app_state.dart';
+import '../screens/now_playing_screen.dart';
 import '../screens/mix_screen.dart';
 import '../app.dart';
 
@@ -66,36 +67,47 @@ class _PlayerBarState extends State<PlayerBar> {
         children: [
           Row(
             children: [
-              ClipRRect(
-                borderRadius: BorderRadius.circular(6),
-                child: Container(
-                  width: 40,
-                  height: 40,
-                  color: Tmp3App.card,
-                  child: _artwork(track, 40),
+              GestureDetector(
+                onTap: () => Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const NowPlayingScreen()),
                 ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+                child: Row(
                   children: [
-                    Text(track.title,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                            color: Tmp3App.txt,
-                            fontSize: 13,
-                            fontWeight: FontWeight.w600)),
-                    Text(track.artist,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style:
-                            const TextStyle(color: Tmp3App.txt3, fontSize: 11)),
-                    if (state.audio.playbackError != null)
-                      Text(state.audio.playbackError!,
-                          style: const TextStyle(
-                              color: Tmp3App.danger, fontSize: 10)),
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(6),
+                      child: Container(
+                        width: 40,
+                        height: 40,
+                        color: Tmp3App.card,
+                        child: _artwork(track, 40),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    SizedBox(
+                      width: MediaQuery.of(context).size.width * 0.3,
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(track.title,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                  color: Tmp3App.txt,
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w600)),
+                          Text(track.artist,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                  color: Tmp3App.txt3, fontSize: 11)),
+                          if (state.audio.playbackError != null)
+                            Text(state.audio.playbackError!,
+                                style: const TextStyle(
+                                    color: Tmp3App.danger, fontSize: 10)),
+                        ],
+                      ),
+                    ),
                   ],
                 ),
               ),
