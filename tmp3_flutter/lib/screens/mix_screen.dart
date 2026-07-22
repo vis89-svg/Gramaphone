@@ -1,3 +1,4 @@
+import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../models/track.dart';
@@ -25,10 +26,48 @@ class _MixScreenState extends State<MixScreen> {
   }
 
   Future<void> _load() async {
-    var yt = context.read<AppState>().ytDlp;
-    var tracks = await yt.searchAudio(widget.artist, limit: 50);
-    var songs = tracks.where((t) => t.duration > 30 && t.duration < 600).take(15).toList();
-    if (mounted) setState(() { _songs = songs; _loading = false; });
+    try {
+      var yt = context.read<AppState>().ytDlp;
+
+      var primary = await yt.searchAudio(widget.artist, limit: 25);
+      var primaryFiltered = primary.where((t) => t.duration > 30 && t.duration < 600).toList();
+
+      // Get YouTube's own related tracks unique to this artist
+      List<Track> similar = [];
+      var firstId = primaryFiltered.isNotEmpty ? primaryFiltered.first.youtubeId : null;
+      if (firstId != null && firstId.isNotEmpty) {
+        var related = await yt.getRelated(firstId, limit: 25);
+        var seenKeys = primaryFiltered.map((t) => t.dbKey).toSet();
+        similar = related
+            .where((t) =>
+                !seenKeys.contains(t.dbKey) &&
+                t.duration > 30 && t.duration < 600)
+            .toList();
+      }
+
+      // Interleave: 1 main artist : 3 similar (Spotify Daily Mix ratio)
+      var rng = Random();
+      similar.shuffle(rng);
+      List<Track> mix = [];
+      int p = 0, s = 0;
+      while (p < primaryFiltered.length && mix.length < 50) {
+        mix.add(primaryFiltered[p++]);
+        for (var i = 0; i < 3 && s < similar.length && mix.length < 50; i++) {
+          mix.add(similar[s++]);
+        }
+      }
+      while (p < primaryFiltered.length && mix.length < 50) {
+        mix.add(primaryFiltered[p++]);
+      }
+      while (s < similar.length && mix.length < 50) {
+        mix.add(similar[s++]);
+      }
+
+      if (mounted) setState(() { _songs = mix; _loading = false; });
+    } catch (e) {
+      debugPrint('[MIX] error: $e');
+      if (mounted) setState(() { _songs = []; _loading = false; });
+    }
   }
 
   @override
@@ -64,7 +103,7 @@ class _MixScreenState extends State<MixScreen> {
                         child: Icon(Icons.music_note, color: Tmp3App.green, size: 40),
                       ),
                       const SizedBox(height: 12),
-                      Text(widget.artist,
+                      Text('${widget.artist} Mix',
                           style: const TextStyle(
                               color: Tmp3App.txt,
                               fontSize: 22,
@@ -77,7 +116,7 @@ class _MixScreenState extends State<MixScreen> {
                 ),
               ),
             ),
-            title: Text(widget.artist,
+            title: Text('${widget.artist} Mix',
                 style: const TextStyle(color: Tmp3App.txt, fontSize: 18)),
           ),
           SliverToBoxAdapter(
@@ -122,16 +161,22 @@ class _MixScreenState extends State<MixScreen> {
         ),
         ...List.generate(_songs!.length, (i) {
           var t = _songs![i];
+          var isPrimary = _songs!.take(i + 1).where((x) => x.dbKey == t.dbKey).length.isOdd;
           return ListTile(
             leading: Artwork(t.effectiveArtworkUrl, size: 36, borderRadius: 8),
             title: Text(t.title,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: const TextStyle(color: Tmp3App.txt, fontSize: 14)),
+                style: TextStyle(
+                    color: Tmp3App.txt,
+                    fontWeight: isPrimary ? FontWeight.w600 : FontWeight.w400,
+                    fontSize: 14)),
             subtitle: Row(
               children: [
                 Text(t.artist,
-                    style: const TextStyle(color: Tmp3App.txt3, fontSize: 11)),
+                    style: TextStyle(
+                        color: isPrimary ? Tmp3App.green : Tmp3App.txt3,
+                        fontSize: 11)),
                 if (t.duration > 0)
                   Text(' · ${t.durationDisplay}',
                       style: const TextStyle(color: Tmp3App.txt3, fontSize: 11)),

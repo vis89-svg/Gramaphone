@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'package:flutter/foundation.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as p;
@@ -21,7 +22,7 @@ class DatabaseService {
   static Future<Database> _init() async {
     Directory dir = await getApplicationSupportDirectory();
     String path = p.join(dir.path, dbName);
-    return await openDatabase(path, version: 2, onCreate: (d, v) async {
+    return await openDatabase(path, version: 3, onCreate: (d, v) async {
       await d.execute('''
         CREATE TABLE IF NOT EXISTS profiles (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -46,6 +47,7 @@ class DatabaseService {
           title TEXT,
           artist TEXT,
           album TEXT,
+          artwork_url TEXT,
           play_duration REAL DEFAULT 0,
           completed INTEGER DEFAULT 0,
           skipped INTEGER DEFAULT 0,
@@ -117,6 +119,9 @@ class DatabaseService {
       if (oldV < 2) {
         await d.execute('ALTER TABLE recommendation_history ADD COLUMN negative INTEGER DEFAULT 0');
       }
+      if (oldV < 3) {
+        await d.execute('ALTER TABLE listening_history ADD COLUMN artwork_url TEXT');
+      }
     });
   }
 
@@ -157,11 +162,14 @@ class DatabaseService {
   static Future<void> logPlay(int pid, Track t, double duration,
       bool completed, bool skipped) async {
     final d = await db;
+    var art = t.effectiveArtworkUrl;
+    debugPrint('[LOG] saving artwork_url="$art" for "${t.title}" yt=${t.youtubeId}');
     await d.insert('listening_history', {
       'profile_id': pid,
       'title': t.title,
       'artist': t.artist,
       'album': t.album,
+      'artwork_url': art,
       'play_duration': duration,
       'completed': completed ? 1 : 0,
       'skipped': skipped ? 1 : 0,
@@ -348,13 +356,17 @@ class DatabaseService {
   static Future<List<Map<String, dynamic>>> getRecentlyPlayedTracks(int pid,
       {int limit = 10}) async {
     final d = await db;
-    return await d.rawQuery('''
-      SELECT title, artist, album, play_duration, completed,
+    var rows = await d.rawQuery('''
+      SELECT title, artist, album, artwork_url, play_duration, completed,
              played_at
       FROM listening_history
       WHERE profile_id = ?
       ORDER BY id DESC
       LIMIT ?
     ''', [pid, limit]);
+    if (rows.isNotEmpty) {
+      debugPrint('[RECENT] first row artwork_url="${rows[0]['artwork_url']}"');
+    }
+    return rows;
   }
 }

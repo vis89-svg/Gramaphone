@@ -62,7 +62,7 @@ class AppState extends ChangeNotifier {
   List<Map<String, dynamic>> get recentlyPlayed => library.recentlyPlayed;
   List<Map<String, dynamic>> get heavyRotation => library.heavyRotation;
   List<Map<String, dynamic>> get playlists => library.playlists;
-  List<Track> get dailyMixes => library.dailyMixes;
+  List<Track> get artistMixes => library.artistMixes;
   List<Track> get newReleases => library.newReleases;
 
   // --- Coordinated operations ---
@@ -84,7 +84,10 @@ class AppState extends ChangeNotifier {
   Future<void> logPlay(Track t, double duration, bool completed,
       bool skipped) async {
     if (profile.profileId == null) return;
-    await library.logPlay(profile.profileId!, t, duration, completed, skipped);
+    var effectiveTrack = (t.youtubeId != null || t.artworkUrl.isNotEmpty)
+        ? t
+        : t.copyWith(youtubeId: audio.lastYoutubeId);
+    await library.logPlay(profile.profileId!, effectiveTrack, duration, completed, skipped);
     await refresh();
     notifyListeners();
   }
@@ -98,7 +101,7 @@ class AppState extends ChangeNotifier {
         anchorYoutubeId: audio.lastYoutubeId,
         anchorTrack: queueMgr.currentTrack,
       );
-      await library.generateDailyMixes(pid);
+      await library.generateArtistMixes(pid);
       await library.fetchNewReleases(pid);
     } catch (e) {
       debugPrint('[REFRESH] error: $e');
@@ -122,6 +125,14 @@ class AppState extends ChangeNotifier {
     var tracks = await queueMgr.ytDlp.searchAudio(prompt, limit: 15);
     for (var t in tracks) {
       enqueue(t);
+    }
+    var pid = profile.profileId;
+    if (pid != null && tracks.isNotEmpty) {
+      var plid = await library.database.createPlaylist(pid, prompt, 'ai');
+      for (var t in tracks) {
+        await library.database.addPlaylistTrack(plid, t);
+      }
+      await refresh();
     }
   }
 

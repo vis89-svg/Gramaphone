@@ -154,7 +154,7 @@ class AudioService {
       await player.setVolume(100);
       await player.stop();
       await player.open(Media(url));
-      _currentTrack = t;
+      _currentTrack = t.copyWith(youtubeId: _lastYoutubeId);
       _isPlaying = true;
       playStateController.add(true);
       _playbackError = null;

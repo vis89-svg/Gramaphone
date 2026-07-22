@@ -4,6 +4,7 @@ import '../providers/app_state.dart';
 import '../models/track.dart';
 import 'mix_screen.dart';
 import 'artist_screen.dart';
+import 'history_screen.dart';
 import '../widgets/artwork.dart';
 import '../app.dart';
 
@@ -69,25 +70,24 @@ class _HomeScreenState extends State<HomeScreen> {
           padding: const EdgeInsets.all(16),
           children: [
             if (state.recentlyPlayed.isNotEmpty) ...[
-              _sectionHeader('Recently Played'),
-              SizedBox(
-                height: 120,
-                child: ListView.builder(
-                  scrollDirection: Axis.horizontal,
-                  itemCount: state.recentlyPlayed.length,
-                  itemBuilder: (_, i) {
-                    var h = state.recentlyPlayed[i];
-                    return _recentCard(
-                      h['title'] as String,
-                      h['artist'] as String,
-                      () {
-                        var t = Track(title: h['title'], artist: h['artist']);
-                        state.playNow(t);
-                      },
-                    );
-                  },
-                ),
-              ),
+              _sectionHeader('Recently Played',
+                  trailing: TextButton(
+                    onPressed: () => Navigator.push(
+                      context,
+                      MaterialPageRoute(builder: (_) => const HistoryScreen()),
+                    ),
+                    child: const Text('Show All',
+                        style: TextStyle(color: Tmp3App.green, fontSize: 12)),
+                  )),
+              ...state.recentlyPlayed.take(6).map((h) => _recentRow(
+                    h['title'] as String,
+                    h['artist'] as String,
+                    h['artwork_url'] as String? ?? '',
+                    () {
+                      var t = Track(title: h['title'], artist: h['artist']);
+                      state.playNow(t);
+                    },
+                  )),
               const SizedBox(height: 24),
             ],
             if (state.heavyRotation.isNotEmpty) ...[
@@ -113,16 +113,16 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
               const SizedBox(height: 24),
             ],
-            if (state.dailyMixes.isNotEmpty) ...[
-              _sectionHeader('Daily Mixes'),
+            if (state.artistMixes.isNotEmpty) ...[
+              _sectionHeader('Artist Mixes'),
               SizedBox(
-                height: 120,
+                height: 160,
                 child: ListView.builder(
                   scrollDirection: Axis.horizontal,
-                  itemCount: state.dailyMixes.length,
+                  itemCount: state.artistMixes.length,
                   itemBuilder: (_, i) {
-                    var m = state.dailyMixes[i];
-                    return _mixCard(m, () => _showMixSheet(m.artist));
+                    var m = state.artistMixes[i];
+                    return _artCard(m, () => _showMixSheet(m.artist));
                   },
                 ),
               ),
@@ -131,13 +131,13 @@ class _HomeScreenState extends State<HomeScreen> {
             if (state.newReleases.isNotEmpty) ...[
               _sectionHeader('New Releases'),
               SizedBox(
-                height: 120,
+                height: 160,
                 child: ListView.builder(
                   scrollDirection: Axis.horizontal,
                   itemCount: state.newReleases.length,
                   itemBuilder: (_, i) {
                     var n = state.newReleases[i];
-                    return _mixCard(n, () => _showMixSheet(n.artist));
+                    return _artCard(n, () => _showMixSheet(n.artist));
                   },
                 ),
               ),
@@ -196,14 +196,58 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  Widget _sectionHeader(String title) {
+  Widget _sectionHeader(String title, {Widget? trailing}) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 12),
-      child: Text(title,
-          style: const TextStyle(
-              color: Tmp3App.txt,
-              fontSize: 18,
-              fontWeight: FontWeight.bold)),
+      child: Row(
+        children: [
+          Text(title,
+              style: const TextStyle(
+                  color: Tmp3App.txt,
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold)),
+          const Spacer(),
+          if (trailing != null) trailing,
+        ],
+      ),
+    );
+  }
+
+  Widget _recentRow(String title, String artist, String artworkUrl, VoidCallback onTap) {
+    return InkWell(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        margin: const EdgeInsets.only(bottom: 4),
+        decoration: BoxDecoration(
+          color: Tmp3App.card,
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Row(
+          children: [
+            Artwork(artworkUrl, size: 40, borderRadius: 6),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                          color: Tmp3App.txt, fontWeight: FontWeight.w600)),
+                  Text(artist,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(color: Tmp3App.txt3, fontSize: 12)),
+                ],
+              ),
+            ),
+            const Icon(Icons.play_circle_outline,
+                color: Tmp3App.green, size: 28),
+          ],
+        ),
+      ),
     );
   }
 
@@ -243,27 +287,20 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  Widget _mixCard(Track t, VoidCallback onTap) {
+  Widget _artCard(Track t, VoidCallback onTap) {
     return GestureDetector(
       onTap: onTap,
       child: Container(
         width: 140,
         margin: const EdgeInsets.only(right: 10),
         decoration: BoxDecoration(
-          gradient: LinearGradient(
-            colors: [Tmp3App.card, Tmp3App.green.withValues(alpha: 0.2)],
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-          ),
+          color: Tmp3App.card,
           borderRadius: BorderRadius.circular(12),
         ),
         child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(t.collectionId?.startsWith('new_') == true
-                ? Icons.new_releases
-                : Icons.queue_music_rounded,
-                color: Tmp3App.green, size: 28),
+            const SizedBox(height: 8),
+            Artwork(t.effectiveArtworkUrl, size: 80, borderRadius: 8),
             const SizedBox(height: 8),
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 8),
@@ -474,5 +511,4 @@ class _HomeScreenState extends State<HomeScreen> {
       MaterialPageRoute(builder: (_) => MixScreen(artist: artist)),
     );
   }
-
 }

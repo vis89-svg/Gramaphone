@@ -53,4 +53,15 @@ class Track {
     var s = duration % 60;
     return '$m:${s.toString().padLeft(2, '0')}';
   }
+
+  Track copyWith({String? youtubeId, String? artworkUrl}) => Track(
+    title: title,
+    artist: artist,
+    album: album,
+    artworkUrl: artworkUrl ?? this.artworkUrl,
+    duration: duration,
+    youtubeId: youtubeId ?? this.youtubeId,
+    collectionId: collectionId,
+    previewUrl: previewUrl,
+  );
 }

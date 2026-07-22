@@ -133,6 +133,23 @@ class ItunesService {
     }
   }
 
+  static Future<String?> getArtistArtwork(String artistName) async {
+    try {
+      var r = await http
+          .get(_build('search', {'term': artistName, 'entity': 'song', 'limit': '1'}))
+          .timeout(const Duration(seconds: 4));
+      if (r.statusCode != 200) return null;
+      var data = json.decode(r.body);
+      var results = data['results'] as List;
+      if (results.isEmpty) return null;
+      var art = results[0]['artworkUrl100'] as String?;
+      if (art == null) return null;
+      return art.replaceAll('100x100bb', '600x600bb');
+    } catch (_) {
+      return null;
+    }
+  }
+
   static Future<List<Map<String, dynamic>>> searchByGenre(String genre,
       {String entity = 'musicArtist', int limit = 8}) async {
     try {
