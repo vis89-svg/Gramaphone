@@ -113,6 +113,33 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
               const SizedBox(height: 24),
             ],
+            if (state.forYouMixes.isNotEmpty) ...[
+              _sectionHeader('For You'),
+              SizedBox(
+                height: 160,
+                child: ListView.builder(
+                  scrollDirection: Axis.horizontal,
+                  itemCount: state.forYouMixes.length,
+                  itemBuilder: (_, i) {
+                    var m = state.forYouMixes[i];
+                    var artists = state.forYouClusters[m.collectionId ?? ''] ?? [];
+                    return _artCard(m, () {
+                      if (artists.length > 1) {
+                        Navigator.push(context,
+                          MaterialPageRoute(builder: (_) => MixScreen(
+                            artist: m.title,
+                            clusterArtists: artists,
+                          )),
+                        );
+                      } else {
+                        _showMixSheet(m.artist);
+                      }
+                    });
+                  },
+                ),
+              ),
+              const SizedBox(height: 24),
+            ],
             if (state.artistMixes.isNotEmpty) ...[
               _sectionHeader('Artist Mixes'),
               SizedBox(
@@ -130,17 +157,7 @@ class _HomeScreenState extends State<HomeScreen> {
             ],
             if (state.newReleases.isNotEmpty) ...[
               _sectionHeader('New Releases'),
-              SizedBox(
-                height: 160,
-                child: ListView.builder(
-                  scrollDirection: Axis.horizontal,
-                  itemCount: state.newReleases.length,
-                  itemBuilder: (_, i) {
-                    var n = state.newReleases[i];
-                    return _artCard(n, () => _showMixSheet(n.artist));
-                  },
-                ),
-              ),
+              ...state.newReleases.take(12).map((n) => _songRow(n)),
               const SizedBox(height: 24),
             ],
             if (sug['artists'] != null && (sug['artists'] as List).isNotEmpty) ...[
