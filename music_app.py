@@ -10,6 +10,41 @@ ctk.set_default_color_theme("green")
 
 YT = [sys.executable, "-m", "yt_dlp", "--remote-components", "ejs:github"]
 ITUNES = "https://itunes.apple.com"
+DZ = "https://api.deezer.com"
+
+def dz_get(path, params=None):
+    try:
+        r = requests.get(f"{DZ}{path}", params=params, timeout=10)
+        return r.json()
+    except:
+        return {}
+
+def dz_search_playlists(q, limit=25):
+    data = dz_get("/search/playlist", {"q": q, "limit": limit})
+    return data.get("data", [])
+
+def dz_playlist(p):
+    return {
+        "id": p.get("id", 0),
+        "title": p.get("title", ""),
+        "description": p.get("description", ""),
+        "nb_tracks": p.get("nb_tracks", 0),
+        "fans": p.get("fans", 0),
+        "picture": (p.get("picture_medium", "") or "").replace("250x250", "100x100"),
+        "creator_name": p.get("creator", {}).get("name", ""),
+    }
+
+def dz_track(t):
+    return {
+        "trackName": t.get("title", ""),
+        "artistName": t.get("artist", {}).get("name", ""),
+        "artistId": t.get("artist", {}).get("id", 0),
+        "collectionName": t.get("album", {}).get("title", ""),
+        "collectionId": t.get("album", {}).get("id", 0),
+        "artworkUrl100": (t.get("album", {}).get("cover_medium", "") or "").replace("250x250", "100x100"),
+        "trackId": t.get("id", 0),
+        "trackTimeMillis": t.get("duration", 0) * 1000,
+    }
 
 vlc_instance = vlc.Instance("--aout=directsound", "--quiet")
 player = vlc_instance.media_player_new()
@@ -67,6 +102,40 @@ def init_db():
         played_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY(profile_id) REFERENCES profiles(id)
     )""")
+    # Migrate: add new columns to listening_history
+    for col, typ in [("play_duration", "REAL DEFAULT 0"), ("song_duration", "REAL DEFAULT 0"),
+                     ("completed", "INTEGER DEFAULT 0"), ("skipped", "INTEGER DEFAULT 0")]:
+        try:
+            conn.execute(f"ALTER TABLE listening_history ADD COLUMN {col} {typ}")
+        except:
+            pass
+    conn.execute("""CREATE TABLE IF NOT EXISTS artist_affinity (
+        id INTEGER PRIMARY KEY, profile_id INTEGER, artist_name TEXT,
+        play_count INTEGER DEFAULT 0, fav_count INTEGER DEFAULT 0,
+        download_count INTEGER DEFAULT 0, playlist_add_count INTEGER DEFAULT 0,
+        completed_count INTEGER DEFAULT 0, skip_count INTEGER DEFAULT 0,
+        affinity_score REAL DEFAULT 0, last_updated TIMESTAMP,
+        FOREIGN KEY(profile_id) REFERENCES profiles(id),
+        UNIQUE(profile_id, artist_name)
+    )""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS taste_profile (
+        id INTEGER PRIMARY KEY, profile_id INTEGER, genre TEXT,
+        percentage REAL DEFAULT 0, last_updated TIMESTAMP,
+        FOREIGN KEY(profile_id) REFERENCES profiles(id),
+        UNIQUE(profile_id, genre)
+    )""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS recommendation_history (
+        id INTEGER PRIMARY KEY, profile_id INTEGER,
+        rec_type TEXT, item_key TEXT, item_name TEXT,
+        recommended_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY(profile_id) REFERENCES profiles(id)
+    )""")
+    # Migration: add columns to artist_affinity
+    for col, typ in [("skip_count", "INTEGER DEFAULT 0")]:
+        try:
+            conn.execute(f"ALTER TABLE artist_affinity ADD COLUMN {col} {typ}")
+        except:
+            pass
     conn.commit()
     return conn
 
@@ -122,11 +191,13 @@ class App:
         self.now_playing = None
         self.db = init_db()
         self.profile_id = None
+        self._genre_cache = {}
         self._check_onboarding()
 
         self._ui()
         self._bind()
         self._tick()
+        self._auto_playlist_timer()
         self.root.protocol("WM_DELETE_WINDOW", self._close)
 
     def _ui(self):
@@ -342,9 +413,21 @@ class App:
         self.ss_frame = ctk.CTkFrame(self.ss_scroll, fg_color="transparent")
         self.ss_frame.pack(fill=tk.X)
 
+        # Playlists (from Deezer)
+        pls = ctk.CTkFrame(self.home_frame, fg_color="transparent")
+        pls.grid(row=5, column=0, sticky="nsew", pady=(0, 28))
+        pls.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(pls, text="Playlists", font=("Segoe UI", 20, "bold"),
+                     text_color=TXT).pack(anchor="w")
+        self.pl_scroll = ctk.CTkScrollableFrame(pls, fg_color="transparent",
+                                                  orientation="horizontal", height=180)
+        self.pl_scroll.pack(fill=tk.X, pady=(8, 0))
+        self.pl_frame = ctk.CTkFrame(self.pl_scroll, fg_color="transparent")
+        self.pl_frame.pack(fill=tk.X)
+
         # Recently Played
         rp = ctk.CTkFrame(self.home_frame, fg_color="transparent")
-        rp.grid(row=5, column=0, sticky="ew", pady=(0, 28))
+        rp.grid(row=6, column=0, sticky="ew", pady=(0, 28))
         rp.grid_columnconfigure(0, weight=1)
 
         rph = ctk.CTkFrame(rp, fg_color="transparent")
@@ -363,7 +446,7 @@ class App:
 
         # Trending Songs + Live Streams row
         row2 = ctk.CTkFrame(self.home_frame, fg_color="transparent")
-        row2.grid(row=6, column=0, sticky="nsew", pady=(0, 28))
+        row2.grid(row=7, column=0, sticky="nsew", pady=(0, 28))
         row2.grid_columnconfigure(0, weight=2)
         row2.grid_columnconfigure(1, weight=1, minsize=300)
         row2.grid_rowconfigure(0, weight=1)
@@ -459,6 +542,84 @@ class App:
         self.mix_frame = ctk.CTkFrame(self.mix_scroll, fg_color="transparent")
         self.mix_frame.pack(fill=tk.X)
 
+    def _refresh_playlists(self):
+        for w in self.pl_frame.winfo_children():
+            w.destroy()
+        def fetch():
+            try:
+                data = dz_get("/chart/0/playlists", {"limit": 10})
+                items = data.get("data", [])
+            except:
+                items = []
+            playlists = [dz_playlist(p) for p in items]
+            self.root.after(0, lambda: self._display_playlists(playlists))
+        threading.Thread(target=fetch, daemon=True).start()
+
+    def _display_playlists(self, playlists):
+        for w in self.pl_frame.winfo_children():
+            w.destroy()
+        if not playlists:
+            ctk.CTkLabel(self.pl_frame, text="No playlists found.",
+                         font=("Segoe UI", 12), text_color=TXT3).pack(pady=20)
+            return
+        for pl in playlists:
+            card = ctk.CTkFrame(self.pl_frame, fg_color=CARD, corner_radius=12, width=180, height=180)
+            card.pack(side=tk.LEFT, padx=6)
+            card.pack_propagate(False)
+            img = None
+            pic = pl.get("picture", "")
+            if pic:
+                img = fetch_art(pic.replace("100x100", "80x80"), (56, 56))
+            ilbl = ctk.CTkLabel(card, text="", image=img, width=56, height=56) if img else ctk.CTkLabel(card, text="\U0001F3B6", font=("Segoe UI", 24))
+            ilbl.pack(pady=(14, 4))
+            ctk.CTkLabel(card, text=pl["title"][:18], font=("Segoe UI", 12, "bold"),
+                         text_color=TXT).pack()
+            ctk.CTkLabel(card, text=f"{pl['nb_tracks']} tracks", font=("Segoe UI", 10),
+                         text_color=TXT3).pack()
+            ctk.CTkButton(card, text="\u25b6  Open", width=80, height=28,
+                          fg_color=GREEN, hover_color="#1aa34a",
+                          text_color="#000000", corner_radius=14,
+                          font=("Segoe UI", 11, "bold"),
+                          command=lambda pid=pl["id"]: self._open_dz_playlist(pid)).pack(pady=(8, 0))
+
+    def _open_dz_playlist(self, plid):
+        def fetch():
+            pl = dz_get(f"/playlist/{plid}")
+            tracks = [dz_track(t) for t in pl.get("tracks", {}).get("data", [])]
+            self.root.after(0, lambda: self._show_dz_playlist(pl.get("title", "Playlist"), tracks))
+        threading.Thread(target=fetch, daemon=True).start()
+
+    def _show_dz_playlist(self, title, tracks):
+        win = ctk.CTkToplevel(self.root)
+        win.title(title)
+        win.geometry("600x450")
+        win.transient(self.root)
+        win.grab_set()
+        ctk.CTkLabel(win, text=title, font=("Segoe UI", 18, "bold"),
+                     text_color=TXT).pack(pady=(14, 10))
+        sf = ctk.CTkScrollableFrame(win, fg_color="transparent")
+        sf.pack(fill=tk.BOTH, expand=True, padx=16, pady=(0, 12))
+        for i, t in enumerate(tracks):
+            r = ctk.CTkFrame(sf, fg_color=CARD, corner_radius=8)
+            r.pack(fill=tk.X, pady=2)
+            r.grid_columnconfigure(1, weight=1)
+            ctk.CTkLabel(r, text=str(i+1), width=28, font=("Segoe UI", 11),
+                         text_color=TXT3).grid(row=0, column=0, rowspan=2, padx=(10, 6))
+            ctk.CTkLabel(r, text=t["trackName"], font=("Segoe UI", 13, "bold"),
+                         text_color=TXT, anchor="w").grid(row=0, column=1, sticky="w", padx=(0, 8))
+            ctk.CTkLabel(r, text=f"{t['artistName']}  \u00b7  {t['collectionName']}" if t['collectionName'] else t['artistName'],
+                         font=("Segoe UI", 11), text_color=TXT3, anchor="w").grid(row=1, column=1, sticky="w", padx=(0, 8))
+            ctk.CTkButton(r, text="\u25b6", width=32, height=28,
+                          fg_color=GREEN, hover_color="#1aa34a",
+                          text_color="#000000", corner_radius=8,
+                          font=("Segoe UI", 10, "bold"),
+                          command=lambda t=t: self._enqueue(t["trackName"], t["artistName"], t.get("collectionName",""), t.get("artworkUrl100",""))).grid(row=0, column=2, rowspan=2, padx=(0, 4))
+        ctk.CTkButton(win, text="Queue All", command=lambda: (
+            [self._enqueue(t["trackName"], t["artistName"], t.get("collectionName",""), t.get("artworkUrl100","")) for t in tracks],
+            win.destroy()),
+            fg_color=GREEN, hover_color="#1aa34a", text_color="#000000",
+            corner_radius=14, font=("Segoe UI", 13, "bold")).pack(pady=(0, 14))
+
     def _refresh_home_mixes(self):
         for w in self.mix_frame.winfo_children():
             w.destroy()
@@ -534,77 +695,236 @@ class App:
             return
 
         def fetch():
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            pid = self.profile_id
             favs = self.profile_artists[:5]
-            genres = []
 
-            # Collect genres from favorite artists
-            for a in favs:
+            # Read recommendation history (last 7 days) to avoid repeat recs
+            recent_recs_artists = set()
+            recent_recs_songs = set()
+            recent_recs_albums = set()
+            try:
+                rec_rows = c.execute("""
+                    SELECT rec_type, item_key FROM recommendation_history
+                    WHERE profile_id=? AND recommended_at >= datetime('now', '-1 days')
+                """, (pid,)).fetchall()
+                for rtype, key in rec_rows:
+                    if rtype == 'artist':
+                        recent_recs_artists.add(key)
+                    elif rtype == 'song':
+                        recent_recs_songs.add(key)
+                    elif rtype == 'album':
+                        recent_recs_albums.add(key)
+            except:
+                pass
+
+            # Get taste profile from DB (genre percentages)
+            taste = c.execute(
+                "SELECT genre, percentage FROM taste_profile WHERE profile_id=? ORDER BY percentage DESC LIMIT 4",
+                (pid,)).fetchall()
+            top_genres = [r[0] for r in taste] if taste else []
+            if not top_genres:
+                for a in favs:
+                    g = self._get_artist_genre(a)
+                    if g and g not in top_genres:
+                        top_genres.append(g)
+            if not top_genres:
+                top_genres = ["Pop"]
+
+            # Time-of-day and adjacent genre (use cached methods but pass conn)
+            tod_raw = c.execute(
+                "SELECT DISTINCT lh.artist FROM listening_history lh WHERE lh.profile_id=? ORDER BY lh.id DESC LIMIT 10",
+                (pid,)).fetchall()
+            tod_genres = []
+            for (artist,) in tod_raw:
+                g = self._get_artist_genre(artist)
+                if g:
+                    tod_genres.append(g)
+            if tod_genres:
+                tg = max(set(tod_genres), key=tod_genres.count)
+                if tg in top_genres:
+                    top_genres.remove(tg)
+                    top_genres.insert(0, tg)
+
+            # Genre exploration
+            if top_genres:
+                adjacent = self._adjacent_genres(top_genres[0])
+                for ag in adjacent[:2]:
+                    if ag not in top_genres:
+                        top_genres.append(ag)
+                        break
+
+            # Collaborative filtering
+            my_set = set()
+            my_rows = c.execute(
+                "SELECT DISTINCT title, artist FROM listening_history WHERE profile_id=?", (pid,)).fetchall()
+            for t, a in my_rows:
+                my_set.add(f"{t}||{a}")
+            collab_songs = []
+            if len(my_set) >= 3:
+                others = c.execute(
+                    "SELECT DISTINCT profile_id FROM listening_history WHERE profile_id != ?", (pid,)).fetchall()
+                sims = []
+                for (uid,) in others:
+                    their_rows = c.execute(
+                        "SELECT DISTINCT title, artist FROM listening_history WHERE profile_id=?", (uid,)).fetchall()
+                    their_set = set(f"{t}||{a}" for t, a in their_rows)
+                    inter = len(my_set & their_set)
+                    union = len(my_set | their_set)
+                    if union > 0 and inter / union > 0.1:
+                        sims.append((inter / union, their_set))
+                sims.sort(key=lambda x: -x[0])
+                for _, their_set in sims[:3]:
+                    for key in their_set:
+                        if key not in my_set:
+                            parts = key.split("||")
+                            collab_songs.append({"title": parts[0], "artist": parts[1] if len(parts) > 1 else ""})
+                            if len(collab_songs) >= 5:
+                                break
+                    if len(collab_songs) >= 5:
+                        break
+            conn.close()
+
+            # Get top affinity artists
+            played_heavy = set()
+            aff_rows = []
+            try:
+                conn2 = sqlite3.connect(DB_PATH)
+                aff_rows = conn2.execute(
+                    "SELECT artist_name FROM artist_affinity WHERE profile_id=? ORDER BY affinity_score DESC LIMIT 10",
+                    (pid,)).fetchall()
+                conn2.close()
+                for (an,) in aff_rows:
+                    played_heavy.add(an)
+            except:
+                pass
+
+            # 1. Suggested Artists — search songs in each genre to find real artists in that genre
+            artists_result = []
+            seen_artists = set(favs) | played_heavy
+            for genre in top_genres[:2]:
                 try:
-                    r = requests.get(f"{ITUNES}/search", params={"term": a, "entity": "song", "limit": 2}, timeout=8)
-                    for s in r.json().get("results", []):
-                        g = s.get("primaryGenreName", "")
-                        if g:
-                            genres.append(g)
+                    r = requests.get(f"{ITUNES}/search", params={"term": genre, "entity": "song", "limit": 25}, timeout=8)
+                    for x in r.json().get("results", []):
+                        aname = x.get("artistName", "")
+                        if aname and aname not in seen_artists and aname not in recent_recs_artists:
+                            seen_artists.add(aname)
+                            artists_result.append(x)
                 except:
                     pass
-
-            # Also collect genres from listening history
-            try:
-                c = self.db.execute(
-                    "SELECT DISTINCT artist FROM listening_history WHERE profile_id=? ORDER BY id DESC LIMIT 10",
-                    (self.profile_id,))
-                for row in c.fetchall():
-                    try:
-                        r = requests.get(f"{ITUNES}/search", params={"term": row[0], "entity": "song", "limit": 1}, timeout=5)
-                        for s in r.json().get("results", []):
-                            g = s.get("primaryGenreName", "")
-                            if g:
-                                genres.append(g)
-                    except:
-                        pass
-            except:
-                pass
-
-            top_genre = max(set(genres), key=genres.count) if genres else "Pop"
-
-            # 1. Suggested Artists
-            artists_result = []
-            try:
-                r = requests.get(f"{ITUNES}/search", params={"term": top_genre, "entity": "musicArtist", "limit": 8}, timeout=8)
-                for x in r.json().get("results", []):
-                    if x["artistName"] not in favs:
-                        artists_result.append(x)
-            except:
-                pass
 
             # 2. Suggested Albums
             albums_result = []
             seen_albums = set()
-            for a in favs[:3]:
+            album_artists = [r[0] for r in aff_rows[:4]] if aff_rows else favs[:3]
+            for a in album_artists:
                 try:
-                    r = requests.get(f"{ITUNES}/search", params={"term": a, "entity": "album", "limit": 5}, timeout=8)
+                    r = requests.get(f"{ITUNES}/search", params={"term": a, "entity": "album", "limit": 4}, timeout=10)
                     for x in r.json().get("results", []):
+                        if x.get("wrapperType") != "collection":
+                            continue
                         name = x.get("collectionName", "")
-                        if name and name not in seen_albums:
+                        al_key = f"{name}||{x.get('artistName','')}"
+                        if name and name not in seen_albums and al_key not in recent_recs_albums:
                             seen_albums.add(name)
                             albums_result.append(x)
                 except:
                     pass
+            # Fallback: if no albums found, search by genre
+            if not albums_result and top_genres:
+                for genre in top_genres[:2]:
+                    try:
+                        r = requests.get(f"{ITUNES}/search", params={"term": genre, "entity": "album", "limit": 8}, timeout=10)
+                        for x in r.json().get("results", []):
+                            if x.get("wrapperType") != "collection":
+                                continue
+                            name = x.get("collectionName", "")
+                            aname = x.get("artistName", "")
+                            al_key = f"{name}||{aname}"
+                            if name and name not in seen_albums and al_key not in recent_recs_albums and aname not in played_heavy:
+                                seen_albums.add(name)
+                                albums_result.append(x)
+                    except:
+                        pass
 
             # 3. Suggested Songs
-            songs_result = []
-            seen_songs = set()
+            heard_songs = set()
             try:
-                r = requests.get(f"{ITUNES}/search", params={"term": top_genre, "entity": "song", "limit": 10}, timeout=8)
-                for x in r.json().get("results", []):
-                    key = (x.get("trackName", ""), x.get("artistName", ""))
-                    if key not in seen_songs:
-                        seen_songs.add(key)
-                        songs_result.append(x)
+                conn3 = sqlite3.connect(DB_PATH)
+                for (key,) in conn3.execute(
+                    "SELECT DISTINCT title || '||' || artist FROM listening_history WHERE profile_id=?", (pid,)):
+                    heard_songs.add(key)
+                conn3.close()
             except:
                 pass
 
-            self.root.after(0, self._display_suggestions, artists_result, albums_result, songs_result)
+            songs_result = []
+            seen_songs = set()
+            artist_song_count = {}  # diversity: max 2 songs per artist
+            def _ok_song(tn, an, db_key):
+                if db_key in heard_songs or db_key in recent_recs_songs:
+                    return False
+                if (tn, an) in seen_songs:
+                    return False
+                if artist_song_count.get(an, 0) >= 2:
+                    return False
+                return True
+            for genre in top_genres[:2]:
+                try:
+                    r = requests.get(f"{ITUNES}/search", params={"term": genre, "entity": "song", "limit": 8}, timeout=8)
+                    for x in r.json().get("results", []):
+                        tn = x.get("trackName", "")
+                        an = x.get("artistName", "")
+                        db_key = f"{tn}||{an}"
+                        if _ok_song(tn, an, db_key):
+                            seen_songs.add((tn, an))
+                            artist_song_count[an] = artist_song_count.get(an, 0) + 1
+                            songs_result.append(x)
+                except:
+                    pass
+            for a in [r[0] for r in aff_rows[:3]]:
+                try:
+                    r = requests.get(f"{ITUNES}/search", params={"term": a, "entity": "song", "limit": 4}, timeout=8)
+                    for x in r.json().get("results", []):
+                        tn = x.get("trackName", "")
+                        an = x.get("artistName", "")
+                        db_key = f"{tn}||{an}"
+                        if _ok_song(tn, an, db_key):
+                            seen_songs.add((tn, an))
+                            artist_song_count[an] = artist_song_count.get(an, 0) + 1
+                            songs_result.append(x)
+                except:
+                    pass
+            for cs in collab_songs:
+                title, artist = cs.get("title", ""), cs.get("artist", "")
+                db_key = f"{title}||{artist}"
+                if _ok_song(title, artist, db_key):
+                    seen_songs.add((title, artist))
+                    artist_song_count[artist] = artist_song_count.get(artist, 0) + 1
+                    songs_result.append({"trackName": title, "artistName": artist,
+                                         "collectionName": "", "artworkUrl100": ""})
+
+            # Save recommendation history (async)
+            def _save_recs():
+                try:
+                    rc = sqlite3.connect(DB_PATH)
+                    for x in artists_result[:8]:
+                        rc.execute("INSERT OR IGNORE INTO recommendation_history (profile_id, rec_type, item_key, item_name) VALUES (?,?,?,?)",
+                                   (pid, 'artist', x.get("artistName",""), x.get("artistName","")))
+                    for x in albums_result[:8]:
+                        rc.execute("INSERT OR IGNORE INTO recommendation_history (profile_id, rec_type, item_key, item_name) VALUES (?,?,?,?)",
+                                   (pid, 'album', f"{x.get('collectionName','')}||{x.get('artistName','')}", x.get("collectionName","")))
+                    for x in songs_result[:12]:
+                        rc.execute("INSERT OR IGNORE INTO recommendation_history (profile_id, rec_type, item_key, item_name) VALUES (?,?,?,?)",
+                                   (pid, 'song', f"{x.get('trackName','')}||{x.get('artistName','')}", x.get("trackName","")))
+                    rc.commit()
+                    rc.close()
+                except:
+                    pass
+            threading.Thread(target=_save_recs, daemon=True).start()
+
+            self.root.after(0, self._display_suggestions, artists_result[:8], albums_result[:8], songs_result[:12])
 
         threading.Thread(target=fetch, daemon=True).start()
 
@@ -630,7 +950,103 @@ class App:
 
         threading.Thread(target=fetch, daemon=True).start()
 
-    def _show_album_popup(self, album_name, artist_name, artwork_url):
+    def _show_artist_profile(self, artist_name):
+        def fetch():
+            songs, albums, playlists = [], [], []
+            try:
+                r = requests.get(f"{ITUNES}/search", params={"term": artist_name, "entity": "song", "limit": 25}, timeout=10)
+                songs = [x for x in r.json().get("results", []) if x.get("artistName","").lower() == artist_name.lower()][:20]
+            except:
+                pass
+            try:
+                r = requests.get(f"{ITUNES}/search", params={"term": artist_name, "entity": "album", "limit": 15}, timeout=10)
+                albums = [x for x in r.json().get("results", []) if x.get("artistName","").lower() == artist_name.lower()]
+            except:
+                pass
+            try:
+                for x in dz_search_playlists(artist_name, 6):
+                    playlists.append(dz_playlist(x))
+            except:
+                pass
+            self.root.after(0, lambda: self._build_artist_profile(artist_name, songs, albums, playlists))
+        threading.Thread(target=fetch, daemon=True).start()
+
+    def _build_artist_profile(self, artist_name, songs, albums, playlists):
+        win = ctk.CTkToplevel(self.root)
+        win.title(f"{artist_name}")
+        win.geometry("650x500")
+        win.transient(self.root)
+        win.grab_set()
+        sf = ctk.CTkScrollableFrame(win, fg_color="transparent")
+        sf.pack(fill=tk.BOTH, expand=True, padx=16, pady=(14, 12))
+        ctk.CTkLabel(sf, text=artist_name, font=("Segoe UI", 20, "bold"),
+                     text_color=TXT).pack(anchor="w", pady=(0, 10))
+        if songs:
+            ctk.CTkLabel(sf, text="Top Songs", font=("Segoe UI", 15, "bold"),
+                         text_color=TXT).pack(anchor="w", pady=(4, 4))
+            for i, s in enumerate(songs):
+                title = s.get("trackName","")
+                aname = s.get("artistName","")
+                album = s.get("collectionName","")
+                art = s.get("artworkUrl100","")
+                r = ctk.CTkFrame(sf, fg_color=CARD, corner_radius=8)
+                r.pack(fill=tk.X, pady=2)
+                r.grid_columnconfigure(1, weight=1)
+                ctk.CTkLabel(r, text=str(i+1), width=24, font=("Segoe UI", 11),
+                             text_color=TXT3).grid(row=0, column=0, rowspan=2, padx=(8, 4))
+                ctk.CTkLabel(r, text=title, font=("Segoe UI", 12, "bold"),
+                             text_color=TXT, anchor="w").grid(row=0, column=1, sticky="w", padx=(0, 6))
+                ctk.CTkLabel(r, text=album, font=("Segoe UI", 10),
+                             text_color=TXT3, anchor="w").grid(row=1, column=1, sticky="w", padx=(0, 6))
+                ctk.CTkButton(r, text="\u25b6", width=28, height=24,
+                              fg_color=GREEN, hover_color="#1aa34a", text_color="#000000",
+                              corner_radius=8, font=("Segoe UI", 10, "bold"),
+                              command=lambda t=title, a=aname, al=album, au=art:
+                                  self._enqueue(t, a, al, au)).grid(row=0, column=2, rowspan=2, padx=(0, 8))
+        if albums:
+            ctk.CTkLabel(sf, text="Albums", font=("Segoe UI", 15, "bold"),
+                         text_color=TXT).pack(anchor="w", pady=(10, 4))
+            for x in albums:
+                an = x.get("collectionName","")
+                art = x.get("artworkUrl100","")
+                tc = x.get("trackCount",0)
+                r = ctk.CTkFrame(sf, fg_color=CARD, corner_radius=8)
+                r.pack(fill=tk.X, pady=2)
+                r.grid_columnconfigure(1, weight=1)
+                ctk.CTkLabel(r, text="\U0001F4BF", font=("Segoe UI", 14)).grid(row=0, column=0, padx=(8, 4))
+                ctk.CTkLabel(r, text=an, font=("Segoe UI", 12, "bold"),
+                             text_color=TXT, anchor="w").grid(row=0, column=1, sticky="w", padx=(0, 6))
+                ctk.CTkLabel(r, text=f"{tc} tracks", font=("Segoe UI", 10),
+                             text_color=TXT3, anchor="w").grid(row=1, column=1, sticky="w", padx=(0, 6))
+                ctk.CTkButton(r, text="View Tracks", width=80, height=24,
+                              fg_color=GREEN, hover_color="#1aa34a", text_color="#000000",
+                              corner_radius=10, font=("Segoe UI", 9, "bold"),
+                              command=lambda n=an, a=artist_name, u=art:
+                                  self._show_album_popup(n, a, u)).grid(row=0, column=2, rowspan=2, padx=(0, 8))
+        if playlists:
+            ctk.CTkLabel(sf, text="Playlists", font=("Segoe UI", 15, "bold"),
+                         text_color=TXT).pack(anchor="w", pady=(10, 4))
+            for pl in playlists:
+                plid = pl["id"]
+                plt = pl["title"]
+                nt = pl["nb_tracks"]
+                r = ctk.CTkFrame(sf, fg_color=CARD, corner_radius=8)
+                r.pack(fill=tk.X, pady=2)
+                r.grid_columnconfigure(1, weight=1)
+                ctk.CTkLabel(r, text="\U0001F3B6", font=("Segoe UI", 14)).grid(row=0, column=0, padx=(8, 4))
+                ctk.CTkLabel(r, text=plt, font=("Segoe UI", 12, "bold"),
+                             text_color=TXT, anchor="w").grid(row=0, column=1, sticky="w", padx=(0, 6))
+                ctk.CTkLabel(r, text=f"{nt} tracks", font=("Segoe UI", 10),
+                             text_color=TXT3, anchor="w").grid(row=1, column=1, sticky="w", padx=(0, 6))
+                ctk.CTkButton(r, text="Open", width=60, height=24,
+                              fg_color=GREEN, hover_color="#1aa34a", text_color="#000000",
+                              corner_radius=10, font=("Segoe UI", 9, "bold"),
+                              command=lambda pid=plid: self._open_dz_playlist(pid)).grid(row=0, column=2, rowspan=2, padx=(0, 8))
+        if not songs and not albums and not playlists:
+            ctk.CTkLabel(sf, text="No data found for this artist.",
+                         font=("Segoe UI", 12), text_color=TXT3).pack(pady=20)
+
+    def _show_album_popup(self, album_name, artist_name, artwork_url=""):
         win = ctk.CTkToplevel(self.root)
         win.title(f"{album_name}")
         win.geometry("550x450")
@@ -681,9 +1097,35 @@ class App:
                           text_color="#000000", corner_radius=8,
                           font=("Segoe UI", 10, "bold"),
                           command=lambda t=title, a=aname, al=album, au=art:
-                              self._enqueue(t, a, al, au)).grid(row=0, column=2, rowspan=2, padx=(0, 10))
+                              self._enqueue(t, a, al, au)).grid(row=0, column=2, rowspan=2, padx=(0, 4))
+            ctk.CTkButton(r, text="\u2139", width=24, height=24,
+                          fg_color="transparent", hover_color=HOVER,
+                          text_color=TXT3, corner_radius=6,
+                          font=("Segoe UI", 9),
+                          command=lambda t=title, a=aname: self._show_similar_songs_popup(t, a)).grid(row=0, column=3, rowspan=2, padx=(0, 10))
+
+    def _show_similar_songs_popup(self, title, artist):
+        win = ctk.CTkToplevel(self.root)
+        win.title(f"Similar to {title}")
+        win.geometry("500x400")
+        win.transient(self.root)
+        win.grab_set()
+        ctk.CTkLabel(win, text=f"Similar to \"{title}\" by {artist}",
+                     font=("Segoe UI", 15, "bold"), text_color=TXT).pack(pady=(14, 8))
+        sf = ctk.CTkScrollableFrame(win, fg_color="transparent")
+        sf.pack(fill=tk.BOTH, expand=True, padx=16, pady=(0, 12))
+        ctk.CTkLabel(sf, text="Loading...", font=("Segoe UI", 12), text_color=TXT3).pack(pady=20)
+
+        def fetch():
+            similar = self._find_similar_songs(title, artist)
+            self.root.after(0, lambda: self._populate_track_list(sf, similar))
+
+        threading.Thread(target=fetch, daemon=True).start()
 
     def _display_suggestions(self, artists, albums, songs):
+        if not artists:
+            ctk.CTkLabel(self.sa_frame, text="No suggestions yet \u2014 listen to more music!",
+                         font=("Segoe UI", 11), text_color=TXT3).pack(pady=16)
         for x in artists:
             aname = x.get("artistName", "")
             art = x.get("artworkUrl100", "") or x.get("artworkUrl60", "")
@@ -708,6 +1150,9 @@ class App:
                           font=("Segoe UI", 9, "bold"),
                           command=lambda a=aname, u=art: self._show_artist_popup(a, u)).pack(pady=(4, 0))
 
+        if not albums:
+            ctk.CTkLabel(self.sal_frame, text="No suggestions yet \u2014 listen to more music!",
+                         font=("Segoe UI", 11), text_color=TXT3).pack(pady=16)
         for x in albums:
             name = x.get("collectionName", "")
             aname = x.get("artistName", "")
@@ -730,6 +1175,9 @@ class App:
                           font=("Segoe UI", 9, "bold"),
                           command=lambda n=name, a=aname, u=art: self._show_album_popup(n, a, u)).pack(pady=(4, 0))
 
+        if not songs:
+            ctk.CTkLabel(self.ss_frame, text="No suggestions yet \u2014 listen to more music!",
+                         font=("Segoe UI", 11), text_color=TXT3).pack(pady=16)
         for x in songs:
             title = x.get("trackName", "")
             aname = x.get("artistName", "")
@@ -768,7 +1216,7 @@ class App:
         self._active_filter = "All"
         self._filter_btns = {}
         self._last_query = ""
-        for i, label in enumerate(["All", "Songs", "Artists", "Albums"]):
+        for i, label in enumerate(["All", "Songs", "Artists", "Albums", "Playlists"]):
             btn = ctk.CTkButton(ff, text=label, width=80, height=30,
                                 font=("Segoe UI", 12),
                                 fg_color=GREEN if label == "All" else CARD,
@@ -966,6 +1414,7 @@ class App:
             self.current_page = "home"
             self._refresh_suggestions()
             self._refresh_recently_played()
+            self._refresh_playlists()
         elif idx == 1:
             self.search_frame.grid()
             self.current_page = "search"
@@ -974,6 +1423,7 @@ class App:
             self.current_page = "home"
             self._refresh_suggestions()
             self._refresh_recently_played()
+            self._refresh_playlists()
         elif idx == 3:
             self.search_frame.grid()
             self.current_page = "search"
@@ -982,6 +1432,7 @@ class App:
             self.current_page = "home"
             self._refresh_suggestions()
             self._refresh_recently_played()
+            self._refresh_playlists()
 
     def _show_search(self):
         q = self.e.get().strip()
@@ -1010,6 +1461,38 @@ class App:
     def _search(self, q):
         rows = []
         seen = set()
+        # Load user personalization data
+        fav_artists = set(getattr(self, 'profile_artists', []))
+        aff_artists = set()
+        heard_songs = set()
+        taste_genres = set()
+        if self.profile_id:
+            try:
+                pc = sqlite3.connect(DB_PATH)
+                for (an,) in pc.execute(
+                    "SELECT artist_name FROM artist_affinity WHERE profile_id=? AND affinity_score>10 ORDER BY affinity_score DESC LIMIT 20",
+                    (self.profile_id,)).fetchall():
+                    aff_artists.add(an)
+                for (key,) in pc.execute(
+                    "SELECT DISTINCT title||'||'||artist FROM listening_history WHERE profile_id=?", (self.profile_id,)).fetchall():
+                    heard_songs.add(key)
+                for (g,) in pc.execute(
+                    "SELECT genre FROM taste_profile WHERE profile_id=? AND percentage>5", (self.profile_id,)).fetchall():
+                    taste_genres.add(g)
+                pc.close()
+            except:
+                pass
+        # Score storage for sorting
+        score_map = {}  # iid -> score
+        def _score_track(tn, an, tag):
+            s = 0
+            if an in fav_artists:
+                s += 10
+            elif an in aff_artists:
+                s += 5
+            if f"{tn}||{an}" in heard_songs:
+                s += 3
+            return s
         try:
             r = requests.get(f"{ITUNES}/search", params={"term": q, "entity": "musicArtist", "limit": 5}, timeout=10)
             for x in r.json().get("results", []):
@@ -1018,6 +1501,8 @@ class App:
                     seen.add(aid)
                     aname = x["artistName"]
                     aid_raw = str(x["artistId"])
+                    sc = 10 if aname in fav_artists else (5 if aname in aff_artists else 0)
+                    score_map[aid] = sc
                     rows.append(("", aid, "", (aname, "Artist", ""), ("artist", aid_raw)))
                     try:
                         rs = requests.get(f"{ITUNES}/search", params={"term": aname, "entity": "song", "limit": 20}, timeout=10)
@@ -1030,35 +1515,64 @@ class App:
                                     m, sec = divmod(dur, 60)
                                     art = s.get("artworkUrl100", "")
                                     track_data[tid] = (s["trackName"], s["artistName"], str(s.get("collectionId","")), art)
+                                    sc = _score_track(s["trackName"], s["artistName"], tid)
+                                    score_map[tid] = sc
                                     rows.append((aid, tid, "", (s["trackName"], "Track", f"{m}:{sec:02d}"), ("track", tid)))
                     except:
                         pass
         except:
             pass
         try:
-            r = requests.get(f"{ITUNES}/search", params={"term": q, "entity": "album", "limit": 10}, timeout=10)
+            r = requests.get(f"{ITUNES}/search", params={"term": q, "entity": "album", "limit": 25}, timeout=10)
             for x in r.json().get("results", []):
                 alid = f"al_{x['collectionId']}"
                 if alid not in seen:
                     seen.add(alid)
+                    aname = x.get("artistName","")
+                    sc = 10 if aname in fav_artists else (5 if aname in aff_artists else 0)
+                    score_map[alid] = sc
                     p = f"a_{x['artistId']}" if f"a_{x['artistId']}" in seen else ""
-                    rows.append((p, alid, "", (x["collectionName"], "Album", x.get("artistName","")), ("album", str(x["collectionId"]))))
+                    rows.append((p, alid, "", (x["collectionName"], "Album", aname), ("album", str(x["collectionId"]))))
         except:
             pass
         try:
-            r = requests.get(f"{ITUNES}/search", params={"term": q, "entity": "song", "limit": 15}, timeout=10)
+            r = requests.get(f"{ITUNES}/search", params={"term": q, "entity": "song", "limit": 25}, timeout=10)
             for x in r.json().get("results", []):
                 tid = f"t_{x['trackId']}"
                 if tid not in seen:
                     seen.add(tid)
                     dur = x.get("trackTimeMillis", 0) // 1000
                     m, s = divmod(dur, 60)
+                    aname = x.get("artistName","")
+                    tn = x.get("trackName","")
                     p = f"al_{x['collectionId']}" if f"al_{x['collectionId']}" in seen else ""
                     art = x.get("artworkUrl100", "")
-                    track_data[tid] = (x["trackName"], x["artistName"], str(x.get("collectionId","")), art)
-                    rows.append((p, tid, "", (x["trackName"], "Track", f"{x['artistName']} \u00b7 {m}:{s:02d}"), ("track", tid)))
+                    track_data[tid] = (tn, aname, str(x.get("collectionId","")), art)
+                    sc = _score_track(tn, aname, tid)
+                    score_map[tid] = sc
+                    rows.append((p, tid, "", (tn, "Track", f"{aname} \u00b7 {m}:{s:02d}"), ("track", tid)))
         except:
             pass
+        # Playlists (from Deezer)
+        try:
+            for x in dz_search_playlists(q, 12):
+                pl = dz_playlist(x)
+                plid = f"pl_{pl['id']}"
+                if plid not in seen:
+                    seen.add(plid)
+                    rows.append(("", plid, "", (pl["title"], "Playlist", f"{pl['nb_tracks']} tracks"), ("playlist", str(pl["id"]))))
+        except:
+            pass
+        # Sort: top-scored items first, track children stay under parents
+        def sort_key(row):
+            parent = row[0]
+            iid = row[1]
+            sc = score_map.get(iid, 0)
+            # Artists/albums at top, then tracks sorted by score
+            tag = row[4][0] if len(row) > 4 else ""
+            priority = 0 if tag in ("artist", "album") else 1
+            return (-sc, priority, row[3][0] if row[3] else "")
+        rows.sort(key=sort_key)
         self.root.after(0, self._show, rows)
 
     def _show(self, rows):
@@ -1088,9 +1602,25 @@ class App:
         rows = []
         seen = set()
         track_data.clear()
-        entity_map = {"Songs": "song", "Artists": "musicArtist", "Albums": "album"}
+        # Load personalization data
+        fav_artists = set(getattr(self, 'profile_artists', []))
+        aff_artists = set()
+        if self.profile_id:
+            try:
+                pc = sqlite3.connect(DB_PATH)
+                for (an,) in pc.execute(
+                    "SELECT artist_name FROM artist_affinity WHERE profile_id=? AND affinity_score>10 ORDER BY affinity_score DESC LIMIT 20",
+                    (self.profile_id,)).fetchall():
+                    aff_artists.add(an)
+                pc.close()
+            except:
+                pass
+        score_map = {}
+        def _sc(aname):
+            return 10 if aname in fav_artists else (5 if aname in aff_artists else 0)
+        entity_map = {"Songs": "song", "Artists": "musicArtist", "Albums": "album", "Playlists": "playlist"}
         entity = entity_map.get(filt, "song")
-        limit_map = {"Songs": 200, "Artists": 10, "Albums": 200}
+        limit_map = {"Songs": 200, "Artists": 10, "Albums": 200, "Playlists": 50}
         lim = limit_map.get(filt, 200)
         try:
             r = requests.get(f"{ITUNES}/search", params={"term": q, "entity": entity, "limit": lim}, timeout=15)
@@ -1099,7 +1629,9 @@ class App:
                     aid = f"a_{x['artistId']}"
                     if aid not in seen:
                         seen.add(aid)
-                        rows.append(("", aid, "", (x["artistName"], "Artist", ""), ("artist", str(x["artistId"]))))
+                        aname = x["artistName"]
+                        score_map[aid] = _sc(aname)
+                        rows.append(("", aid, "", (aname, "Artist", ""), ("artist", str(x["artistId"]))))
             elif entity == "song":
                 originals, collabs, remixes = [], [], []
                 ql = q.lower()
@@ -1111,15 +1643,21 @@ class App:
                     dur = x.get("trackTimeMillis", 0) // 1000
                     m, s_div = divmod(dur, 60)
                     art = x.get("artworkUrl100", "")
-                    track_data[tid] = (x["trackName"], x["artistName"], str(x.get("collectionId","")), art)
-                    entry = (tid, x["trackName"], x["artistName"], f"{m}:{s_div:02d}")
+                    aname = x["artistName"]
+                    track_data[tid] = (x["trackName"], aname, str(x.get("collectionId","")), art)
+                    score_map[tid] = _sc(aname)
+                    entry = (tid, x["trackName"], aname, f"{m}:{s_div:02d}")
                     title_lower = x["trackName"].lower()
                     if "remix" in title_lower:
                         remixes.append(entry)
-                    elif x["artistName"].lower() != ql:
+                    elif aname.lower() != ql:
                         collabs.append(entry)
                     else:
                         originals.append(entry)
+                # Sort each section by personalization score
+                originals.sort(key=lambda e: -score_map.get(e[0], 0))
+                collabs.sort(key=lambda e: -score_map.get(e[0], 0))
+                remixes.sort(key=lambda e: -score_map.get(e[0], 0))
                 if originals:
                     rows.append(("", "_sec_originals", "", ("Songs", "", ""), ("label", "")))
                     for tid, tn, an, dur in originals:
@@ -1132,6 +1670,13 @@ class App:
                     rows.append(("", "_sec_remixes", "", ("Remixes", "", ""), ("label", "")))
                     for tid, tn, an, dur in remixes:
                         rows.append(("_sec_remixes", tid, "", (tn, an, dur), ("track", tid)))
+            elif entity == "playlist":
+                for x in dz_search_playlists(q, lim):
+                    pl = dz_playlist(x)
+                    plid = f"pl_{pl['id']}"
+                    if plid not in seen:
+                        seen.add(plid)
+                        rows.append(("", plid, "", (pl["title"], "Playlist", f"{pl['nb_tracks']} tracks by {pl['creator_name']}"), ("playlist", str(pl["id"]))))
             else:
                 albums_list, appearances = [], []
                 ql = q.lower()
@@ -1141,12 +1686,15 @@ class App:
                         continue
                     seen.add(alid)
                     an = x.get("artistName", "")
+                    score_map[alid] = _sc(an)
                     cid = str(x["collectionId"])
                     entry = (alid, x["collectionName"], an, f"{x.get('trackCount',0)} tracks", cid)
                     if an.lower() == ql:
                         albums_list.append(entry)
                     else:
                         appearances.append(entry)
+                albums_list.sort(key=lambda e: -score_map.get(e[0], 0))
+                appearances.sort(key=lambda e: -score_map.get(e[0], 0))
                 if albums_list:
                     rows.append(("", "_sec_albums", "", ("Albums", "", ""), ("label", "")))
                     for alid, cn, an, tc, cid in albums_list:
@@ -1169,10 +1717,22 @@ class App:
             return
         typ = tags[0]
         rid = tags[1]
+        vals = self.result_tree.item(iid, "values") or []
         if typ == "artist":
-            threading.Thread(target=self._load_artist, args=(rid,), daemon=True).start()
+            aname = vals[0] if vals else ""
+            if aname:
+                threading.Thread(target=self._show_artist_profile, args=(aname,), daemon=True).start()
         elif typ == "album":
-            threading.Thread(target=self._load_album, args=(rid,), daemon=True).start()
+            album_name = vals[0] if vals else ""
+            artist_name = ""
+            if len(vals) >= 3 and vals[1] == "Album":
+                artist_name = vals[2]
+            elif len(vals) >= 2:
+                artist_name = vals[1]
+            if album_name:
+                self._show_album_popup(album_name, artist_name)
+        elif typ == "playlist":
+            self._open_dz_playlist(rid)
         elif typ == "track":
             info = track_data.get(rid)
             if info:
@@ -1214,6 +1774,31 @@ class App:
             except:
                 pass
         self.result_tree.item(pid, open=True)
+
+    def _load_playlist(self, plid):
+        pl = dz_get(f"/playlist/{plid}")
+        tracks = [dz_track(t) for t in pl.get("tracks", {}).get("data", [])]
+        self.root.after(0, lambda: self._show_playlist_tracks(pl.get("title", "Playlist"), tracks))
+
+    def _show_playlist_tracks(self, title, tracks):
+        sel = self.result_tree.selection()
+        pid = sel[0] if sel else ""
+        if pid:
+            for c in self.result_tree.get_children(pid):
+                self.result_tree.delete(c)
+        for x in tracks:
+            tid = f"t_{x['trackId']}"
+            dur = x["trackTimeMillis"] // 1000
+            m, s = divmod(dur, 60)
+            track_data[tid] = (x["trackName"], x["artistName"], str(x["collectionId"]), x["artworkUrl100"])
+            try:
+                self.result_tree.insert(pid, tk.END, iid=tid, text="",
+                              values=(x["trackName"], "Track", f"{m}:{s:02d}"),
+                              tags=("track", tid))
+            except:
+                pass
+        if pid:
+            self.result_tree.item(pid, open=True)
 
     def _load_album(self, alid):
         try:
@@ -1356,18 +1941,35 @@ class App:
             self.nxt.configure(state=tk.DISABLED)
             self.dl_btn.configure(state=tk.DISABLED)
 
-    def _log_play(self, item):
+    def _log_play_start(self, item):
         if not self.profile_id:
             return
         try:
-            self.db.execute("INSERT INTO listening_history (profile_id, title, artist, album, art_url) VALUES (?,?,?,?,?)",
-                            (self.profile_id, item.title, item.artist, item.album or "", item.art_url or ""))
+            c = self.db.execute("INSERT INTO listening_history (profile_id, title, artist, album, art_url, song_duration) VALUES (?,?,?,?,?,?)",
+                                (self.profile_id, item.title, item.artist, item.album or "", item.art_url or "",
+                                 int(player.get_length() / 1000) if player.get_length() > 0 else 0))
+            self._current_history_id = c.lastrowid
+            self.db.commit()
+        except:
+            self._current_history_id = None
+
+    def _log_play_end(self, completed=False, skipped=False):
+        hid = getattr(self, '_current_history_id', None)
+        if not hid:
+            return
+        try:
+            dur = int(player.get_time() / 1000) if player.get_time() > 0 else 0
+            total = int(player.get_length() / 1000) if player.get_length() > 0 else 0
+            self.db.execute("UPDATE listening_history SET play_duration=?, completed=?, skipped=? WHERE id=?",
+                            (dur, 1 if completed else 0, 1 if skipped else 0, hid))
             self.db.commit()
         except:
             pass
+        self._current_history_id = None
 
     def _play_vlc(self, url):
         try:
+            self._log_play_end(skipped=True)  # end previous song if user skipped to new one
             player.stop()
             player.set_media(vlc.Media(url))
             player.play()
@@ -1379,7 +1981,7 @@ class App:
             self.queue_lb.selection_set(self.qidx)
             self.queue_lb.see(self.qidx)
             if self.now_playing:
-                self._log_play(self.now_playing)
+                self._log_play_start(self.now_playing)
         except Exception as e:
             self._err(str(e))
 
@@ -1394,6 +1996,7 @@ class App:
             self.pp.configure(text="\u25b6")
 
     def _stop(self):
+        self._log_play_end(skipped=True)
         player.stop()
         self.paused = False
         self.pp.configure(text="\u25b6", state=tk.DISABLED)
@@ -1424,11 +2027,13 @@ class App:
             return -1
 
     def _prev(self):
+        self._log_play_end(skipped=True)
         if self.qidx > 0:
             self.qidx -= 1
             self._play_q()
 
     def _next(self):
+        self._log_play_end(skipped=True)
         nxt = self._pick_next()
         if nxt >= 0:
             self.qidx = nxt
@@ -1437,6 +2042,8 @@ class App:
             self._stop()
 
     def _auto_nxt(self):
+        self._log_play_end(completed=True)
+        threading.Thread(target=self._recalculate_affinities, daemon=True).start()
         nxt = self._pick_next()
         if nxt >= 0:
             self.qidx = nxt
@@ -1602,6 +2209,18 @@ class App:
             pass
         self.root.after(500, self._tick)
 
+    def _auto_playlist_timer(self):
+        if self.profile_id:
+            self._generate_auto_playlists_async()
+            threading.Thread(target=self._recalculate_affinities, daemon=True).start()
+        self.root.after(1800000, self._auto_playlist_timer)  # every 30 min
+
+    def _generate_auto_playlists_async(self):
+        def go():
+            self._generate_auto_playlists()
+            self.root.after(0, lambda: (self._refresh_home_mixes(), self._refresh_sidebar_playlists()))
+        threading.Thread(target=go, daemon=True).start()
+
     def _bind(self):
         self.sk.bind("<ButtonPress-1>", lambda e: setattr(self, 'seeking', True))
         self.sk.bind("<ButtonRelease-1>", self._seek_done)
@@ -1634,6 +2253,7 @@ class App:
         messagebox.showerror("Error", msg)
 
     def _close(self):
+        self._log_play_end(skipped=True)
         player.stop()
         self.root.destroy()
 
@@ -1644,7 +2264,9 @@ class App:
             self.profile_id = row[0]
             self.profile_languages = json.loads(row[1]) if row[1] else []
             self.profile_artists = json.loads(row[2]) if row[2] else []
-            self.root.after(100, lambda: (self._refresh_home_mixes(), self._refresh_suggestions(), self._refresh_recently_played()))
+            self.root.after(100, lambda: (self._refresh_home_mixes(), self._refresh_suggestions(), self._refresh_recently_played(), self._refresh_playlists(),
+                                          threading.Thread(target=self._recalculate_affinities, daemon=True).start(),
+                                          self._generate_auto_playlists_async()))
         else:
             self.root.after(500, self._onboarding_wizard)
 
@@ -1712,6 +2334,396 @@ class App:
             return ctk.CTkImage(light_image=img, dark_image=img, size=size)
         except:
             return None
+
+    def _recalculate_affinities(self):
+        if not self.profile_id:
+            return
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            pid = self.profile_id
+            # Recency weighting: recent plays count more
+            rows = c.execute("""
+                SELECT artist,
+                    SUM(CASE
+                        WHEN played_at >= datetime('now', '-7 days') THEN 1.0
+                        WHEN played_at >= datetime('now', '-30 days') THEN 0.8
+                        WHEN played_at >= datetime('now', '-90 days') THEN 0.6
+                        WHEN played_at >= datetime('now', '-365 days') THEN 0.3
+                        ELSE 0.1
+                    END) as weighted_count,
+                    SUM(completed * CASE
+                        WHEN played_at >= datetime('now', '-7 days') THEN 1.0
+                        WHEN played_at >= datetime('now', '-30 days') THEN 0.8
+                        WHEN played_at >= datetime('now', '-90 days') THEN 0.6
+                        WHEN played_at >= datetime('now', '-365 days') THEN 0.3
+                        ELSE 0.1
+                    END) as weighted_completed,
+                    SUM(skipped * CASE
+                        WHEN played_at >= datetime('now', '-7 days') THEN 1.0
+                        WHEN played_at >= datetime('now', '-30 days') THEN 0.8
+                        WHEN played_at >= datetime('now', '-90 days') THEN 0.6
+                        WHEN played_at >= datetime('now', '-365 days') THEN 0.3
+                        ELSE 0.1
+                    END) as weighted_skipped,
+                    SUM(play_duration * CASE
+                        WHEN played_at >= datetime('now', '-7 days') THEN 1.0
+                        WHEN played_at >= datetime('now', '-30 days') THEN 0.8
+                        WHEN played_at >= datetime('now', '-90 days') THEN 0.6
+                        WHEN played_at >= datetime('now', '-365 days') THEN 0.3
+                        ELSE 0.1
+                    END) as weighted_duration
+                FROM listening_history WHERE profile_id=?
+                GROUP BY artist
+            """, (pid,)).fetchall()
+            for artist, play_count, completed, skipped, play_dur in rows:
+                completed = completed or 0
+                skipped = skipped or 0
+                play_dur = play_dur or 0
+                fav = c.execute(
+                    "SELECT COUNT(*) FROM playlist_tracks WHERE artist=? AND playlist_id IN "
+                    "(SELECT id FROM playlists WHERE profile_id=?)",
+                    (artist, pid)).fetchone()[0]
+                score = (play_count * 1.0 + completed * 2.0 - skipped * 0.5 +
+                         fav * 3.0 + min(play_dur / 60, 50))
+                c.execute("""
+                    INSERT INTO artist_affinity (profile_id, artist_name, play_count,
+                        completed_count, skip_count, fav_count, affinity_score, last_updated)
+                    VALUES (?,?,?,?,?,?,?, CURRENT_TIMESTAMP)
+                    ON CONFLICT(profile_id, artist_name) DO UPDATE SET
+                        play_count=excluded.play_count,
+                        completed_count=excluded.completed_count,
+                        skip_count=excluded.skip_count,
+                        fav_count=excluded.fav_count,
+                        affinity_score=excluded.affinity_score,
+                        last_updated=excluded.last_updated
+                """, (pid, artist, play_count, completed, skipped, fav, max(0, score)))
+            conn.commit()
+
+            # Taste profile: genre percentages from listening history
+            self._recalculate_taste_profile(conn, pid)
+            conn.close()
+        except Exception as e:
+            print(f"Affinity recalculation error: {e}")
+
+    def _recalculate_taste_profile(self, conn=None, pid=None):
+        if not self.profile_id and not pid:
+            return
+        if pid is None:
+            pid = self.profile_id
+        own_conn = False
+        if conn is None:
+            conn = sqlite3.connect(DB_PATH)
+            own_conn = True
+        try:
+            c = conn.cursor()
+            artists = c.execute(
+                "SELECT DISTINCT artist FROM listening_history WHERE profile_id=?",
+                (pid,)).fetchall()
+            genre_counts = {}
+            total = 0
+            for (artist,) in artists:
+                g = self._get_artist_genre(artist)
+                if g:
+                    genre_counts[g] = genre_counts.get(g, 0) + 1
+                    total += 1
+            for a in getattr(self, 'profile_artists', []):
+                g = self._get_artist_genre(a)
+                if g:
+                    genre_counts[g] = genre_counts.get(g, 0) + 2
+                    total += 2
+            if total > 0:
+                c.execute("DELETE FROM taste_profile WHERE profile_id=?", (pid,))
+                for genre, count in sorted(genre_counts.items(), key=lambda x: -x[1]):
+                    pct = round(count / total * 100, 1)
+                    c.execute(
+                        "INSERT INTO taste_profile (profile_id, genre, percentage, last_updated) VALUES (?,?,?,CURRENT_TIMESTAMP)",
+                        (pid, genre, pct))
+                conn.commit()
+        except:
+            pass
+        if own_conn:
+            conn.close()
+
+    def _get_artist_genre(self, artist_name):
+        if artist_name in self._genre_cache:
+            return self._genre_cache[artist_name]
+        try:
+            r = requests.get(f"{ITUNES}/search", params={"term": artist_name, "entity": "song", "limit": 1}, timeout=4)
+            items = r.json().get("results", [])
+            if items:
+                genre = items[0].get("primaryGenreName", "") or None
+            else:
+                genre = None
+            self._genre_cache[artist_name] = genre
+            return genre
+        except:
+            self._genre_cache[artist_name] = None
+            return None
+
+    def _song_similarity(self, s1, s2):
+        score = 0
+        if s1.get("artistName") and s2.get("artistName") and s1["artistName"].lower() == s2["artistName"].lower():
+            score += 10
+        if s1.get("primaryGenreName") and s2.get("primaryGenreName") and s1["primaryGenreName"] == s2["primaryGenreName"]:
+            score += 6
+        if s1.get("collectionName") and s2.get("collectionName") and s1["collectionName"] == s2["collectionName"]:
+            score += 5
+        y1 = s1.get("releaseDate", "")[:4] if s1.get("releaseDate") else ""
+        y2 = s2.get("releaseDate", "")[:4] if s2.get("releaseDate") else ""
+        if y1 and y2 and y1.isdigit() and y2.isdigit():
+            ydiff = abs(int(y1) - int(y2))
+            if ydiff <= 2:
+                score += 3
+            elif ydiff <= 5:
+                score += 1
+        return score
+
+    def _find_similar_songs(self, title, artist, limit=8):
+        try:
+            r = requests.get(f"{ITUNES}/search", params={"term": f"{artist} {title}", "entity": "song", "limit": 5}, timeout=6)
+            target = r.json().get("results", [])
+            if not target:
+                return []
+            target = target[0]
+            # Search for similar by genre
+            genre = target.get("primaryGenreName", "")
+            if not genre:
+                return []
+            r2 = requests.get(f"{ITUNES}/search", params={"term": genre, "entity": "song", "limit": 25}, timeout=6)
+            candidates = r2.json().get("results", [])
+            scored = [(self._song_similarity(target, c), c) for c in candidates
+                      if c["trackId"] != target["trackId"]]
+            scored.sort(key=lambda x: -x[0])
+            return [c for _, c in scored[:limit]]
+        except:
+            return []
+
+    def _generate_auto_playlists(self):
+        """Create auto playlists: Forgotten Favorites, Daily Mix, Recently Loved, Hidden Gems"""
+        if not self.profile_id:
+            return
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            pid = self.profile_id
+
+            # Remove old auto playlists
+            conn.execute("DELETE FROM playlist_tracks WHERE playlist_id IN "
+                         "(SELECT id FROM playlists WHERE profile_id=? AND source LIKE 'auto_%')", (pid,))
+            conn.execute("DELETE FROM playlists WHERE profile_id=? AND source LIKE 'auto_%'", (pid,))
+
+            # 1. Forgotten Favorites: played frequently but not in last 14 days
+            forgotten = conn.execute("""
+                SELECT title, artist, album, art_url, COUNT(*) as cnt
+                FROM listening_history
+                WHERE profile_id=? AND played_at < datetime('now', '-14 days')
+                GROUP BY title, artist HAVING cnt >= 3
+                ORDER BY cnt DESC LIMIT 15
+            """, (pid,)).fetchall()
+            if forgotten:
+                c = conn.execute("INSERT INTO playlists (profile_id, name, source) VALUES (?,?,'auto_forgotten')",
+                                 (pid, "Forgotten Favorites"))
+                pl_id = c.lastrowid
+                for i, (t, a, al, au, _) in enumerate(forgotten):
+                    conn.execute("INSERT INTO playlist_tracks (playlist_id, title, artist, album, art_url, position) VALUES (?,?,?,?,?,?)",
+                                 (pl_id, t, a, al or "", au or "", i))
+
+            # 2. Recently Loved: high completion rate from last 30 days
+            loved = conn.execute("""
+                SELECT title, artist, album, art_url, COUNT(*) as cnt
+                FROM listening_history
+                WHERE profile_id=? AND completed=1 AND played_at > datetime('now', '-30 days')
+                GROUP BY title, artist ORDER BY cnt DESC LIMIT 15
+            """, (pid,)).fetchall()
+            if loved:
+                c = conn.execute("INSERT INTO playlists (profile_id, name, source) VALUES (?,?,'auto_loved')",
+                                 (pid, "Recently Loved"))
+                pl_id = c.lastrowid
+                for i, (t, a, al, au, _) in enumerate(loved):
+                    conn.execute("INSERT INTO playlist_tracks (playlist_id, title, artist, album, art_url, position) VALUES (?,?,?,?,?,?)",
+                                 (pl_id, t, a, al or "", au or "", i))
+
+            # 3. Daily Mix: top genres + top affinity artists (with fallback)
+            taste = conn.execute(
+                "SELECT genre FROM taste_profile WHERE profile_id=? ORDER BY percentage DESC LIMIT 2",
+                (pid,)).fetchall()
+            top_artists = conn.execute(
+                "SELECT artist_name FROM artist_affinity WHERE profile_id=? ORDER BY affinity_score DESC LIMIT 3",
+                (pid,)).fetchall()
+            # Fallback: if no taste profile yet, derive from fav artists
+            if not taste and self.profile_artists:
+                for a in self.profile_artists[:3]:
+                    g = self._get_artist_genre(a)
+                    if g:
+                        taste = [(g,)]
+                        break
+            if not top_artists and self.profile_artists:
+                top_artists = [(a,) for a in self.profile_artists[:3]]
+            daily_songs = []
+            seen = set()
+            for (genre,) in taste:
+                try:
+                    r = requests.get(f"{ITUNES}/search", params={"term": genre, "entity": "song", "limit": 8}, timeout=6)
+                    for x in r.json().get("results", []):
+                        key = f"{x.get('trackName','')}||{x.get('artistName','')}"
+                        if key not in seen:
+                            seen.add(key)
+                            daily_songs.append(x)
+                except:
+                    pass
+            for (artist,) in top_artists:
+                try:
+                    r = requests.get(f"{ITUNES}/search", params={"term": artist, "entity": "song", "limit": 5}, timeout=6)
+                    for x in r.json().get("results", []):
+                        key = f"{x.get('trackName','')}||{x.get('artistName','')}"
+                        if key not in seen:
+                            seen.add(key)
+                            daily_songs.append(x)
+                except:
+                    pass
+            if daily_songs:
+                c = conn.execute("INSERT INTO playlists (profile_id, name, source) VALUES (?,?,'auto_daily')",
+                                 (pid, "Daily Mix"))
+                pl_id = c.lastrowid
+                for i, s in enumerate(daily_songs[:20]):
+                    conn.execute("INSERT INTO playlist_tracks (playlist_id, title, artist, album, art_url, position) VALUES (?,?,?,?,?,?)",
+                                 (pl_id, s.get("trackName",""), s.get("artistName",""), s.get("collectionName",""),
+                                  s.get("artworkUrl100",""), i))
+
+            # 4. Hidden Gems: deep cuts from top affinity artists (less popular songs)
+            if top_artists:
+                gem_songs = []
+                seen_gems = set()
+                for (artist,) in top_artists[:2]:
+                    try:
+                        r = requests.get(f"{ITUNES}/search", params={"term": artist, "entity": "song", "limit": 10}, timeout=6)
+                        all_songs = r.json().get("results", [])
+                        # Sort by trackPrice ascending or by trackTimeMillis as proxy for popularity
+                        all_songs.sort(key=lambda x: x.get("trackTimeMillis", 999999))
+                        for s in all_songs[:5]:
+                            key = f"{s.get('trackName','')}||{s.get('artistName','')}"
+                            if key not in seen_gems:
+                                seen_gems.add(key)
+                                gem_songs.append(s)
+                    except:
+                        pass
+                if gem_songs:
+                    c = conn.execute("INSERT INTO playlists (profile_id, name, source) VALUES (?,?,'auto_gems')",
+                                     (pid, "Hidden Gems"))
+                    pl_id = c.lastrowid
+                    for i, s in enumerate(gem_songs[:15]):
+                        conn.execute("INSERT INTO playlist_tracks (playlist_id, title, artist, album, art_url, position) VALUES (?,?,?,?,?,?)",
+                                     (pl_id, s.get("trackName",""), s.get("artistName",""), s.get("collectionName",""),
+                                      s.get("artworkUrl100",""), i))
+
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            print(f"Auto playlist error: {e}")
+
+    def _time_of_day_genre(self):
+        """Return genres preferred at current hour based on listening history."""
+        if not self.profile_id:
+            return []
+        hour = time.localtime().tm_hour
+        if hour < 12:
+            period = "morning"
+        elif hour < 17:
+            period = "afternoon"
+        elif hour < 21:
+            period = "evening"
+        else:
+            period = "night"
+        period_map = {"morning": (6, 12), "afternoon": (12, 17),
+                       "evening": (17, 21), "night": (21, 6)}
+        start_h, end_h = period_map[period]
+        try:
+            if start_h < end_h:
+                rows = self.db.execute("""
+                    SELECT DISTINCT lh.artist FROM listening_history lh
+                    WHERE lh.profile_id=? AND CAST(strftime('%H', lh.played_at) AS INTEGER) BETWEEN ? AND ?
+                    ORDER BY lh.id DESC LIMIT 15
+                """, (self.profile_id, start_h, end_h - 1)).fetchall()
+            else:
+                rows = self.db.execute("""
+                    SELECT DISTINCT lh.artist FROM listening_history lh
+                    WHERE lh.profile_id=? AND (CAST(strftime('%H', lh.played_at) AS INTEGER) >= ? OR CAST(strftime('%H', lh.played_at) AS INTEGER) < ?)
+                    ORDER BY lh.id DESC LIMIT 15
+                """, (self.profile_id, start_h, end_h)).fetchall()
+            genres = []
+            for (artist,) in rows:
+                g = self._get_artist_genre(artist)
+                if g:
+                    genres.append(g)
+            if genres:
+                return [max(set(genres), key=genres.count)]
+        except:
+            pass
+        return []
+
+    def _adjacent_genres(self, genre):
+        adj = {
+            "Pop": ["Indie Pop", "Synth Pop", "Art Pop", "Dance Pop"],
+            "Rock": ["Alternative", "Indie Rock", "Folk Rock", "Hard Rock"],
+            "Hip-Hop": ["R&B", "Trap", "Lo-Fi", "Rap"],
+            "Electronic": ["House", "Techno", "Ambient", "Dance"],
+            "Jazz": ["Soul", "Funk", "Blues", "R&B"],
+            "Classical": ["Orchestral", "Chamber", "Opera", "Piano"],
+            "R&B": ["Neo Soul", "Funk", "Hip-Hop", "Soul"],
+            "Country": ["Folk", "Americana", "Bluegrass", "Singer/Songwriter"],
+            "Metal": ["Hard Rock", "Punk", "Industrial", "Alternative"],
+            "Folk": ["Singer/Songwriter", "Indie Folk", "Americana", "Acoustic"],
+            "Blues": ["Jazz", "Soul", "Rock", "Funk"],
+            "Latin": ["Reggaeton", "Salsa", "Bachata", "Latin Pop"],
+            "K-Pop": ["J-Pop", "Pop", "Dance Pop", "Electronic"],
+        }
+        for key, vals in adj.items():
+            if genre.lower() in key.lower() or key.lower() in genre.lower():
+                return vals
+        return ["Indie", "Alternative", "Singer/Songwriter"]
+
+    def _collaborative_filter(self, limit=5):
+        """Find similar users via Jaccard similarity and recommend their songs."""
+        if not self.profile_id:
+            return []
+        try:
+            my_songs = self.db.execute(
+                "SELECT DISTINCT title, artist FROM listening_history WHERE profile_id=?", (self.profile_id,)).fetchall()
+            my_set = set(f"{t}||{a}" for t, a in my_songs)
+            if len(my_set) < 5:
+                return []
+
+            other_users = self.db.execute(
+                "SELECT DISTINCT profile_id FROM listening_history WHERE profile_id != ?", (self.profile_id,)).fetchall()
+            similarities = []
+            for (uid,) in other_users:
+                their_songs = self.db.execute(
+                    "SELECT DISTINCT title, artist FROM listening_history WHERE profile_id=?", (uid,)).fetchall()
+                their_set = set(f"{t}||{a}" for t, a in their_songs)
+                intersection = len(my_set & their_set)
+                union = len(my_set | their_set)
+                if union == 0:
+                    continue
+                jaccard = intersection / union
+                if jaccard > 0.1:
+                    similarities.append((jaccard, uid, their_set))
+            similarities.sort(key=lambda x: -x[0])
+
+            recommendations = []
+            seen = set()
+            for _, uid, their_set in similarities[:3]:
+                for key in their_set:
+                    if key not in my_set and key not in seen:
+                        seen.add(key)
+                        parts = key.split("||")
+                        recommendations.append({"title": parts[0], "artist": parts[1] if len(parts) > 1 else ""})
+                        if len(recommendations) >= limit:
+                            break
+                if len(recommendations) >= limit:
+                    break
+            return recommendations
+        except:
+            return []
 
     def _onboard_step2(self, parent, win, container, languages):
         for w in parent.winfo_children():
@@ -1937,7 +2949,9 @@ class App:
 
         def generate():
             self._generate_playlists()
-            self.root.after(0, lambda: (gen.destroy(), self._refresh_sidebar_playlists(), self._refresh_home_mixes(), self._refresh_suggestions(), self._refresh_recently_played()))
+            self.root.after(0, lambda: (gen.destroy(), self._refresh_sidebar_playlists(), self._refresh_home_mixes(), self._refresh_suggestions(), self._refresh_recently_played(), self._refresh_playlists(),
+                                          threading.Thread(target=self._recalculate_affinities, daemon=True).start(),
+                                          self._generate_auto_playlists_async()))
 
         threading.Thread(target=generate, daemon=True).start()
 
