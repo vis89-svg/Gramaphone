@@ -63,6 +63,8 @@ class AppState extends ChangeNotifier {
   List<Map<String, dynamic>> get heavyRotation => library.heavyRotation;
   List<Map<String, dynamic>> get playlists => library.playlists;
   List<Track> get artistMixes => library.artistMixes;
+  List<Track> get forYouMixes => library.forYouMixes;
+  Map<String, List<String>> get forYouClusters => library.forYouClusters;
   List<Track> get newReleases => library.newReleases;
 
   // --- Coordinated operations ---
@@ -102,7 +104,8 @@ class AppState extends ChangeNotifier {
         anchorTrack: queueMgr.currentTrack,
       );
       await library.generateArtistMixes(pid);
-      await library.fetchNewReleases(pid);
+      await library.generateForYouMixes(pid);
+      await library.fetchNewReleases(pid, ytDlp: queueMgr.ytDlp);
     } catch (e) {
       debugPrint('[REFRESH] error: $e');
     }

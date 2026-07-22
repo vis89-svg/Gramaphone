@@ -8,8 +8,9 @@ import '../app.dart';
 
 class MixScreen extends StatefulWidget {
   final String artist;
+  final List<String>? clusterArtists;
 
-  const MixScreen({super.key, required this.artist});
+  const MixScreen({super.key, required this.artist, this.clusterArtists});
 
   @override
   State<MixScreen> createState() => _MixScreenState();
@@ -28,6 +29,34 @@ class _MixScreenState extends State<MixScreen> {
   Future<void> _load() async {
     try {
       var yt = context.read<AppState>().ytDlp;
+
+      if (widget.clusterArtists != null && widget.clusterArtists!.length > 1) {
+        List<Track> all = [];
+        Set<String> seen = {};
+        for (var a in widget.clusterArtists!) {
+          var results = await yt.searchAudio(a, limit: 10);
+          for (var t in results) {
+            if (t.duration > 30 && t.duration < 600 && seen.add(t.dbKey)) {
+              all.add(t);
+            }
+          }
+        }
+        // Add discovery from first artist's related
+        if (all.isNotEmpty) {
+          var firstId = all.first.youtubeId;
+          if (firstId != null && firstId.isNotEmpty) {
+            var related = await yt.getRelated(firstId, limit: 15);
+            for (var r in related) {
+              if (r.duration > 30 && r.duration < 600 && seen.add(r.dbKey)) {
+                all.add(r);
+              }
+            }
+          }
+        }
+        all.shuffle();
+        if (mounted) setState(() { _songs = all.take(40).toList(); _loading = false; });
+        return;
+      }
 
       var primary = await yt.searchAudio(widget.artist, limit: 25);
       var primaryFiltered = primary.where((t) => t.duration > 30 && t.duration < 600).toList();

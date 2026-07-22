@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 import '../models/track.dart';
 import '../services/interfaces/database_interface.dart';
+import '../services/interfaces/ytdlp_interface.dart';
 import '../services/recommendation_service.dart';
 import '../services/itunes_service.dart';
 
@@ -15,6 +16,8 @@ class LibraryManager extends ChangeNotifier {
   List<Map<String, dynamic>> _playlists = [];
   List<Track> _artistMixes = [];
   List<Track> _newReleases = [];
+  List<Track> _forYouMixes = [];
+  Map<String, List<String>> _forYouClusters = {};
 
   Map<String, dynamic> get suggestions => _suggestions;
   List<Map<String, dynamic>> get recentlyPlayed => _recentlyPlayed;
@@ -22,6 +25,8 @@ class LibraryManager extends ChangeNotifier {
   List<Map<String, dynamic>> get playlists => _playlists;
   List<Track> get artistMixes => _artistMixes;
   List<Track> get newReleases => _newReleases;
+  List<Track> get forYouMixes => _forYouMixes;
+  Map<String, List<String>> get forYouClusters => _forYouClusters;
 
   Future<void> refresh({
     int? profileId,
@@ -87,20 +92,63 @@ class LibraryManager extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> fetchNewReleases(int profileId) async {
+  Future<void> generateForYouMixes(int profileId) async {
+    try {
+      var affs = await database.getAffinities(profileId, limit: 15);
+      var topArtists = affs.map((a) => a['artist_name'] as String).toList();
+      Map<String, List<String>> genreGroups = {};
+      for (var artist in topArtists) {
+        var g = await ItunesService.getArtistGenre(artist);
+        var genre = g ?? 'Pop';
+        genreGroups.putIfAbsent(genre, () => []);
+        if (genreGroups[genre]!.length < 5) {
+          genreGroups[genre]!.add(artist);
+        }
+      }
+      var sorted = genreGroups.entries.toList()
+        ..sort((a, b) => b.value.length.compareTo(a.value.length));
+      _forYouMixes = [];
+      _forYouClusters = {};
+      for (var entry in sorted.take(6)) {
+        if (entry.value.isEmpty) continue;
+        var art = await ItunesService.getArtistArtwork(entry.key);
+        var desc = entry.value.take(3).join(', ');
+        _forYouMixes.add(Track(
+          title: '${entry.key} Mix',
+          artist: desc + (entry.value.length > 3 ? ' +${entry.value.length - 3} more' : ''),
+          artworkUrl: art ?? '',
+          collectionId: 'foryou_${entry.key}',
+        ));
+        _forYouClusters['foryou_${entry.key}'] = entry.value;
+      }
+    } catch (e) {
+      debugPrint('[LIB] forYouMixes error: $e');
+    }
+    notifyListeners();
+  }
+
+  Future<void> fetchNewReleases(int profileId, {YtDlpInterface? ytDlp}) async {
     try {
       var artists = await database.getProfileArtists(profileId);
       _newReleases = [];
-      for (var artist in artists.take(10)) {
-        var art = await ItunesService.getArtistArtwork(artist);
-        _newReleases.add(Track(
-          title: 'New from $artist',
-          artist: artist,
-          album: '',
-          artworkUrl: art ?? '',
-          duration: 0,
-          collectionId: 'new_$artist',
-        ));
+      Set<String> seen = {};
+      for (var artist in artists.take(5)) {
+        if (ytDlp == null) {
+          var art = await ItunesService.getArtistArtwork(artist);
+          _newReleases.add(Track(
+            title: 'New from $artist',
+            artist: artist,
+            artworkUrl: art ?? '',
+            collectionId: 'new_$artist',
+          ));
+          continue;
+        }
+        var results = await ytDlp.searchAudio('$artist new', limit: 5);
+        for (var t in results) {
+          if (t.duration > 30 && t.duration < 600 && seen.add(t.dbKey)) {
+            _newReleases.add(t);
+          }
+        }
       }
     } catch (e) {
       debugPrint('[LIB] newReleases error: $e');
