@@ -6,6 +6,7 @@ import '../services/database_service.dart';
 import '../services/itunes_service.dart';
 import 'artist_screen.dart';
 import 'album_screen.dart';
+import '../widgets/artwork.dart';
 import '../app.dart';
 
 enum SearchFilter { all, songs, artists, albums }
@@ -452,21 +453,7 @@ class _SearchScreenState extends State<SearchScreen> {
         ),
         child: Row(
           children: [
-            Container(
-              width: 44,
-              height: 44,
-              decoration: BoxDecoration(
-                color: Tmp3App.elev,
-                borderRadius: BorderRadius.circular(6),
-              ),
-              child: Center(
-                child: isFav
-                    ? const Icon(Icons.favorite,
-                        color: Tmp3App.green, size: 20)
-                    : const Icon(Icons.music_note,
-                        color: Tmp3App.txt3),
-              ),
-            ),
+            Artwork(t.effectiveArtworkUrl, size: 44, borderRadius: 6),
             const SizedBox(width: 12),
             Expanded(
               child: Column(
@@ -490,9 +477,16 @@ class _SearchScreenState extends State<SearchScreen> {
                         ),
                     ],
                   ),
-                  Text(t.artist,
-                      style: const TextStyle(
-                          color: Tmp3App.txt3, fontSize: 12)),
+                  Row(
+                    children: [
+                      Text(t.artist,
+                          style: const TextStyle(
+                              color: Tmp3App.txt3, fontSize: 12)),
+                      if (t.duration > 0)
+                        Text(' · ${t.durationDisplay}',
+                            style: const TextStyle(color: Tmp3App.txt3, fontSize: 12)),
+                    ],
+                  ),
                 ],
               ),
             ),

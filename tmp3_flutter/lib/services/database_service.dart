@@ -21,7 +21,7 @@ class DatabaseService {
   static Future<Database> _init() async {
     Directory dir = await getApplicationSupportDirectory();
     String path = p.join(dir.path, dbName);
-    return await openDatabase(path, version: 1, onCreate: (d, v) async {
+    return await openDatabase(path, version: 2, onCreate: (d, v) async {
       await d.execute('''
         CREATE TABLE IF NOT EXISTS profiles (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -108,10 +108,15 @@ class DatabaseService {
           rec_type TEXT,
           item_key TEXT,
           item_name TEXT,
+          negative INTEGER DEFAULT 0,
           recommended_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
           FOREIGN KEY(profile_id) REFERENCES profiles(id)
         )
       ''');
+    }, onUpgrade: (d, oldV, newV) async {
+      if (oldV < 2) {
+        await d.execute('ALTER TABLE recommendation_history ADD COLUMN negative INTEGER DEFAULT 0');
+      }
     });
   }
 
@@ -230,13 +235,14 @@ class DatabaseService {
   }
 
   static Future<void> addRecommendationHistory(
-      int pid, String type, String key, String name) async {
+      int pid, String type, String key, String name, {bool negative = false}) async {
     final d = await db;
     await d.insert('recommendation_history', {
       'profile_id': pid,
       'rec_type': type,
       'item_key': key,
       'item_name': name,
+      'negative': negative ? 1 : 0,
     });
   }
 
@@ -245,10 +251,48 @@ class DatabaseService {
     final d = await db;
     var rows = await d.rawQuery('''
       SELECT item_key FROM recommendation_history
-      WHERE profile_id = ? AND rec_type = ?
+      WHERE profile_id = ? AND rec_type = ? AND negative = 0
       AND recommended_at >= datetime('now', '-7 days')
     ''', [pid, type]);
     return rows.map((r) => r['item_key'] as String).toSet();
+  }
+
+  static Future<Set<String>> getNegativeRecommendations(
+      int pid, String type) async {
+    final d = await db;
+    var rows = await d.rawQuery('''
+      SELECT item_key FROM recommendation_history
+      WHERE profile_id = ? AND rec_type = ? AND negative = 1
+    ''', [pid, type]);
+    return rows.map((r) => r['item_key'] as String).toSet();
+  }
+
+  static Future<Map<String, double>> getGenreAffinityByTimeSlot(int pid) async {
+    final d = await db;
+    var hour = DateTime.now().hour;
+    String slot;
+    if (hour < 6) slot = 'night';
+    else if (hour < 12) slot = 'morning';
+    else if (hour < 18) slot = 'afternoon';
+    else slot = 'evening';
+
+    var rows = await d.rawQuery('''
+      SELECT t.genre, COUNT(*) as cnt
+      FROM listening_history h
+      JOIN taste_profile t ON t.profile_id = h.profile_id
+      WHERE h.profile_id = ?
+        AND CASE
+          WHEN ? = 'morning' THEN CAST(strftime('%H', h.played_at) AS INTEGER) BETWEEN 6 AND 11
+          WHEN ? = 'afternoon' THEN CAST(strftime('%H', h.played_at) AS INTEGER) BETWEEN 12 AND 17
+          WHEN ? = 'evening' THEN CAST(strftime('%H', h.played_at) AS INTEGER) BETWEEN 18 AND 23
+          ELSE CAST(strftime('%H', h.played_at) AS INTEGER) BETWEEN 0 AND 5
+        END
+      GROUP BY t.genre
+      ORDER BY cnt DESC
+    ''', [pid, slot, slot, slot, slot]);
+    if (rows.isEmpty) return {};
+    var total = rows.fold<int>(0, (s, r) => s + (r['cnt'] as int));
+    return {for (var r in rows) r['genre'] as String: (r['cnt'] as int) / total};
   }
 
   static Future<List<Map<String, dynamic>>> getPlaylists(

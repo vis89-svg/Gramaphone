@@ -39,4 +39,18 @@ class Track {
       };
 
   String get dbKey => '$title||$artist';
+
+  String get effectiveArtworkUrl =>
+      artworkUrl.isNotEmpty
+          ? artworkUrl
+          : (youtubeId != null && youtubeId!.isNotEmpty
+              ? 'https://img.youtube.com/vi/$youtubeId/mqdefault.jpg'
+              : '');
+
+  String get durationDisplay {
+    if (duration <= 0) return '';
+    var m = duration ~/ 60;
+    var s = duration % 60;
+    return '$m:${s.toString().padLeft(2, '0')}';
+  }
 }

@@ -4,6 +4,7 @@ import '../providers/app_state.dart';
 import '../models/track.dart';
 import 'mix_screen.dart';
 import 'artist_screen.dart';
+import '../widgets/artwork.dart';
 import '../app.dart';
 
 class HomeScreen extends StatefulWidget {
@@ -372,15 +373,7 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
         child: Row(
           children: [
-            Container(
-              width: 40,
-              height: 40,
-              decoration: BoxDecoration(
-                color: Tmp3App.elev,
-                borderRadius: BorderRadius.circular(6),
-              ),
-              child: const Icon(Icons.music_note, color: Tmp3App.txt3),
-            ),
+            Artwork(t.effectiveArtworkUrl, size: 40, borderRadius: 6),
             const SizedBox(width: 12),
             Expanded(
               child: Column(
@@ -392,14 +385,30 @@ class _HomeScreenState extends State<HomeScreen> {
                       style: const TextStyle(
                           color: Tmp3App.txt,
                           fontWeight: FontWeight.w600)),
-                  Text(t.artist,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style:
-                          const TextStyle(color: Tmp3App.txt3, fontSize: 12)),
+                  Row(
+                    children: [
+                      Text(t.artist,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style:
+                              const TextStyle(color: Tmp3App.txt3, fontSize: 12)),
+                      if (t.duration > 0)
+                        Text(' · ${t.durationDisplay}',
+                            style: const TextStyle(color: Tmp3App.txt3, fontSize: 12)),
+                    ],
+                  ),
                 ],
               ),
             ),
+            InkWell(
+              onTap: () => context.read<AppState>().dismissSuggestion(t),
+              borderRadius: BorderRadius.circular(12),
+              child: const Padding(
+                padding: EdgeInsets.all(6),
+                child: Icon(Icons.close, color: Tmp3App.txt3, size: 18),
+              ),
+            ),
+            const SizedBox(width: 4),
             const Icon(Icons.play_circle_outline,
                 color: Tmp3App.green, size: 28),
           ],

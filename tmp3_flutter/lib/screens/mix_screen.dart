@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../models/track.dart';
 import '../providers/app_state.dart';
+import '../widgets/artwork.dart';
 import '../app.dart';
 
 class MixScreen extends StatefulWidget {
@@ -122,23 +123,20 @@ class _MixScreenState extends State<MixScreen> {
         ...List.generate(_songs!.length, (i) {
           var t = _songs![i];
           return ListTile(
-            leading: Container(
-              width: 36,
-              height: 36,
-              alignment: Alignment.center,
-              decoration: BoxDecoration(
-                color: Tmp3App.elev,
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: Text('${i + 1}',
-                  style: const TextStyle(color: Tmp3App.txt3, fontSize: 13)),
-            ),
+            leading: Artwork(t.effectiveArtworkUrl, size: 36, borderRadius: 8),
             title: Text(t.title,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 style: const TextStyle(color: Tmp3App.txt, fontSize: 14)),
-            subtitle: Text(t.artist,
-                style: const TextStyle(color: Tmp3App.txt3, fontSize: 11)),
+            subtitle: Row(
+              children: [
+                Text(t.artist,
+                    style: const TextStyle(color: Tmp3App.txt3, fontSize: 11)),
+                if (t.duration > 0)
+                  Text(' · ${t.durationDisplay}',
+                      style: const TextStyle(color: Tmp3App.txt3, fontSize: 11)),
+              ],
+            ),
             trailing: IconButton(
               icon: const Icon(Icons.play_circle_outline,
                   color: Tmp3App.green, size: 24),

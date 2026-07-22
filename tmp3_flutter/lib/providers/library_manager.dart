@@ -57,6 +57,13 @@ class LibraryManager extends ChangeNotifier {
     await RecommendationService.recalculateAffinities(profileId);
   }
 
+  void removeSuggestion(Track t) {
+    var songs = _suggestions['songs'] as List<Track>? ?? [];
+    songs.removeWhere((s) => s.dbKey == t.dbKey);
+    _suggestions['songs'] = songs;
+    notifyListeners();
+  }
+
   Future<void> generateDailyMixes(int profileId) async {
     try {
       var affs = await database.getAffinities(profileId, limit: 12);

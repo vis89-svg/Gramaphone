@@ -43,8 +43,9 @@ class QueueManager extends ChangeNotifier {
   }
 
   Future<void> playNow(Track t) async {
+    _queue.clear();
     _sessionHeard.add(_sessionKey(t));
-    _queue.insert(0, t);
+    _queue.add(t);
     _queueIndex = 0;
     await audio.play(t);
     notifyListeners();
@@ -53,6 +54,11 @@ class QueueManager extends ChangeNotifier {
   Future<void> next() async {
     if (_queueIndex < _queue.length - 1) {
       await playIndex(_queueIndex + 1);
+    } else {
+      await injectRelatedTracks(interleave: false);
+      if (_queueIndex < _queue.length - 1) {
+        await playIndex(_queueIndex + 1);
+      }
     }
   }
 

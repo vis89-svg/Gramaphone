@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../providers/app_state.dart';
+import '../widgets/artwork.dart';
 import '../app.dart';
 
 class QueueScreen extends StatelessWidget {
@@ -85,24 +86,7 @@ class QueueScreen extends StatelessWidget {
                     ),
                     child: Row(
                       children: [
-                        Container(
-                          width: 40,
-                          height: 40,
-                          decoration: BoxDecoration(
-                            color: isCurrent
-                                ? Tmp3App.green
-                                : Tmp3App.elev,
-                            borderRadius: BorderRadius.circular(6),
-                          ),
-                          child: Center(
-                            child: isCurrent
-                                ? const Icon(Icons.play_arrow,
-                                    color: Colors.black)
-                                : Text('${idx + 1}',
-                                    style: const TextStyle(
-                                        color: Tmp3App.txt)),
-                          ),
-                        ),
+                        Artwork(t.effectiveArtworkUrl, size: 40, borderRadius: 6),
                         const SizedBox(width: 12),
                         Expanded(
                           child: Column(
@@ -114,9 +98,17 @@ class QueueScreen extends StatelessWidget {
                                   style: const TextStyle(
                                       color: Tmp3App.txt,
                                       fontWeight: FontWeight.w600)),
-                              Text(t.artist,
-                                  style: const TextStyle(
-                                      color: Tmp3App.txt3, fontSize: 12)),
+                              Row(
+                                children: [
+                                  Text(t.artist,
+                                      style: const TextStyle(
+                                          color: Tmp3App.txt3, fontSize: 12)),
+                                  if (t.duration > 0)
+                                    Text(' · ${t.durationDisplay}',
+                                        style: const TextStyle(
+                                            color: Tmp3App.txt3, fontSize: 12)),
+                                ],
+                              ),
                             ],
                           ),
                         ),

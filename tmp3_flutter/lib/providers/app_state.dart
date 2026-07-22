@@ -125,6 +125,16 @@ class AppState extends ChangeNotifier {
     }
   }
 
+  // --- Not Interested ---
+
+  Future<void> dismissSuggestion(Track t) async {
+    var pid = profile.profileId;
+    if (pid == null) return;
+    await RecommendationService.addNegativeFeedback(pid, 'song', t.dbKey, t.title);
+    library.removeSuggestion(t);
+    notifyListeners();
+  }
+
   Map<String, dynamic> getInjectReason(Track t) {
     return {
       'source': 'related',

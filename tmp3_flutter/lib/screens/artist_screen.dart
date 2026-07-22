@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 import '../models/track.dart';
 import '../providers/app_state.dart';
 import '../services/itunes_service.dart';
+import '../widgets/artwork.dart';
 import '../app.dart';
 import 'album_screen.dart';
 
@@ -131,21 +132,20 @@ class _ArtistScreenState extends State<ArtistScreen> {
                       (_, i) {
                         var t = _topSongs![i];
                         return ListTile(
-                          leading: Container(
-                            width: 32,
-                            height: 32,
-                            alignment: Alignment.center,
-                            decoration: BoxDecoration(
-                              color: Tmp3App.elev,
-                              borderRadius: BorderRadius.circular(6),
-                            ),
-                            child: Text('${i + 1}',
-                                style: const TextStyle(color: Tmp3App.txt3, fontSize: 12)),
-                          ),
+                          leading: Artwork(t.effectiveArtworkUrl, size: 32, borderRadius: 6),
                           title: Text(t.title,
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
                               style: const TextStyle(color: Tmp3App.txt, fontSize: 14)),
+                          subtitle: Row(
+                            children: [
+                              Text(t.artist,
+                                  style: const TextStyle(color: Tmp3App.txt3, fontSize: 12)),
+                              if (t.duration > 0)
+                                Text(' · ${t.durationDisplay}',
+                                    style: const TextStyle(color: Tmp3App.txt3, fontSize: 12)),
+                            ],
+                          ),
                           trailing: IconButton(
                             icon: const Icon(Icons.play_circle_outline, color: Tmp3App.green, size: 22),
                             onPressed: () {
@@ -264,13 +264,20 @@ class _ArtistScreenState extends State<ArtistScreen> {
                       (_, i) {
                         var t = _collabs![i];
                         return ListTile(
-                          leading: Icon(Icons.merge_type, color: Tmp3App.txt3, size: 20),
+                          leading: Artwork(t.effectiveArtworkUrl, size: 32, borderRadius: 6),
                           title: Text(t.title,
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
                               style: const TextStyle(color: Tmp3App.txt, fontSize: 14)),
-                          subtitle: Text(t.artist,
-                              style: const TextStyle(color: Tmp3App.txt3, fontSize: 11)),
+                          subtitle: Row(
+                            children: [
+                              Text(t.artist,
+                                  style: const TextStyle(color: Tmp3App.txt3, fontSize: 11)),
+                              if (t.duration > 0)
+                                Text(' · ${t.durationDisplay}',
+                                    style: const TextStyle(color: Tmp3App.txt3, fontSize: 11)),
+                            ],
+                          ),
                           trailing: IconButton(
                             icon: const Icon(Icons.play_circle_outline, color: Tmp3App.green, size: 22),
                             onPressed: () => context.read<AppState>().playNow(t),

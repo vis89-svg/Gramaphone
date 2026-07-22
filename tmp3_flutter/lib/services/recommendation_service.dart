@@ -6,11 +6,29 @@ import 'ytdlp_service.dart';
 
 class RecommendationService {
   static final Map<String, String?> _genreCache = {};
+  static final Map<String, Set<String>> _negativeCache = {};
+  static final Map<String, Map<String, double>> _timeSlotCache = {};
 
   static Future<String?> _getGenre(String artist) async {
     if (_genreCache.containsKey(artist)) return _genreCache[artist];
     var g = await ItunesService.getArtistGenre(artist);
     _genreCache[artist] = g;
+    return g;
+  }
+
+  static Future<Set<String>> _loadNegative(int pid, String type) async {
+    var key = '$pid:$type';
+    if (_negativeCache.containsKey(key)) return _negativeCache[key]!;
+    var s = await DatabaseService.getNegativeRecommendations(pid, type);
+    _negativeCache[key] = s;
+    return s;
+  }
+
+  static Future<Map<String, double>> _getTimeSlotGenres(int pid) async {
+    var key = '$pid:timeslot';
+    if (_timeSlotCache.containsKey(key)) return _timeSlotCache[key]!;
+    var g = await DatabaseService.getGenreAffinityByTimeSlot(pid);
+    _timeSlotCache[key] = g;
     return g;
   }
 
@@ -68,22 +86,34 @@ class RecommendationService {
   static Future<void> recalculateAffinities(int pid) async {
     var history = await DatabaseService.getListeningHistory(pid, limit: 1000);
     Map<String, Map<String, double>> artistData = {};
+    Map<String, Set<String>> artistDates = {};
     for (var h in history) {
       var artist = h['artist'] as String;
       var weight = _recencyWeight(h['played_at'] as String);
       var completed = (h['completed'] as int? ?? 0).toDouble() * weight;
       var skipped = (h['skipped'] as int? ?? 0).toDouble() * weight;
       var dur = (h['play_duration'] as num?)?.toDouble() ?? 0;
-      var durBonus = dur * weight / 60;
+      var playedAt = h['played_at'] as String;
+      var day = playedAt.length >= 10 ? playedAt.substring(0, 10) : playedAt;
+      dur = dur > 0 ? dur : 0;
+      var durBonus = min(dur * weight / 60, 50);
+
       artistData.putIfAbsent(artist, () => {
         'play_count': 0.0, 'completed_count': 0.0,
-        'skip_count': 0.0, 'dur_bonus': 0.0
+        'skip_count': 0.0, 'dur_bonus': 0.0, 'recent_bonus': 0.0
       });
+      artistDates.putIfAbsent(artist, () => {});
+      artistDates[artist]!.add(day);
       var d = artistData[artist]!;
       d['play_count'] = d['play_count']! + weight;
       d['completed_count'] = d['completed_count']! + completed;
       d['skip_count'] = d['skip_count']! + skipped;
-      d['dur_bonus'] = d['dur_bonus']! + min(durBonus, 50);
+      d['dur_bonus'] = d['dur_bonus']! + durBonus;
+      // Recent-week bonus for plays within last 7 days
+      if (DateTime.tryParse(playedAt) != null &&
+          DateTime.now().difference(DateTime.parse(playedAt)).inDays <= 7) {
+        d['recent_bonus'] = d['recent_bonus']! + 2.0;
+      }
     }
 
     var playlists = await DatabaseService.getPlaylists(pid);
@@ -99,11 +129,14 @@ class RecommendationService {
     List<Map<String, dynamic>> affs = [];
     for (var entry in artistData.entries) {
       var d = entry.value;
+      var crossDayBonus = min((artistDates[entry.key]?.length ?? 1) * 1.5, 15.0);
       var score = (d['play_count']! * 1.0 +
           d['completed_count']! * 2.0 -
-          d['skip_count']! * 0.5 +
+          d['skip_count']! * 1.0 +  // increased skip penalty
           (favCount[entry.key] ?? 0) * 3.0 +
-          min(d['dur_bonus']!, 50));
+          min(d['dur_bonus']!, 50) +
+          d['recent_bonus']! +
+          crossDayBonus);
       affs.add({
         'artist_name': entry.key,
         'play_count': d['play_count']!,
@@ -155,6 +188,19 @@ class RecommendationService {
     var taste = await getTasteGenres(pid);
     var topGenres = taste.take(4).map((t) => t['genre'] as String).toList();
     if (topGenres.isEmpty) topGenres = ['Pop'];
+
+    // Contextual time-slot weighting
+    var slotGenres = await _getTimeSlotGenres(pid);
+    if (slotGenres.isNotEmpty) {
+      var slotList = slotGenres.entries.toList()
+        ..sort((a, b) => b.value.compareTo(a.value));
+      for (var sg in slotList.take(2)) {
+        if (!topGenres.contains(sg.key)) {
+          topGenres.insert(0, sg.key);
+        }
+      }
+    }
+
     // Adjacent genre exploration
     if (topGenres.isNotEmpty) {
       var adj = _adjacentGenres(topGenres[0]);
@@ -171,6 +217,8 @@ class RecommendationService {
 
     var recentArtists = await DatabaseService.getRecentRecommendations(pid, 'artist');
     var recentSongs = await DatabaseService.getRecentRecommendations(pid, 'song');
+    var negativeArtists = await _loadNegative(pid, 'artist');
+    var negativeSongs = await _loadNegative(pid, 'song');
 
     var heardSongs = <String>{};
     var history = await DatabaseService.getListeningHistory(pid, limit: 500);
@@ -185,7 +233,7 @@ class RecommendationService {
       var results = await ItunesService.searchByGenre(g, entity: 'musicArtist');
       for (var x in results) {
         var aname = x['artistName'] as String;
-        if (!seenArtists.contains(aname) && !recentArtists.contains(aname)) {
+        if (!seenArtists.contains(aname) && !recentArtists.contains(aname) && !negativeArtists.contains(aname)) {
           seenArtists.add(aname);
           artistsResult.add(x);
         }
@@ -219,6 +267,7 @@ class RecommendationService {
     bool ok(Track t) {
       if (t.title.isEmpty || t.artist.isEmpty) return false;
       if (heardSongs.contains(t.dbKey) || recentSongs.contains(t.dbKey)) return false;
+      if (negativeSongs.contains(t.dbKey)) return false;
       if (artistSongCount.putIfAbsent(t.artist, () => 0) >= 2) return false;
       return true;
     }
@@ -318,5 +367,10 @@ class RecommendationService {
       'albums': albumsResult.take(8).toList(),
       'songs': songsResult.take(12).toList(),
     };
+  }
+
+  static Future<void> addNegativeFeedback(int pid, String type, String key, String name) async {
+    await DatabaseService.addRecommendationHistory(pid, type, key, name, negative: true);
+    _negativeCache['$pid:$type'] = (await DatabaseService.getNegativeRecommendations(pid, type));
   }
 }
