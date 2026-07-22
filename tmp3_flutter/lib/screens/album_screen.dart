@@ -9,8 +9,9 @@ class AlbumScreen extends StatefulWidget {
   final String albumTitle;
   final String? playlistId;
   final String? artist;
+  final String? browseId;
 
-  const AlbumScreen({super.key, required this.albumTitle, this.playlistId, this.artist});
+  const AlbumScreen({super.key, required this.albumTitle, this.playlistId, this.artist, this.browseId});
 
   @override
   State<AlbumScreen> createState() => _AlbumScreenState();
@@ -29,7 +30,12 @@ class _AlbumScreenState extends State<AlbumScreen> {
   Future<void> _load() async {
     var yt = context.read<AppState>().ytDlp;
     List<Track> tracks;
-    if (widget.playlistId != null) {
+    if (widget.browseId != null) {
+      tracks = await yt.getAlbumTracks(widget.browseId!);
+      if (tracks.isEmpty && widget.artist != null) {
+        tracks = await yt.searchAudio('${widget.albumTitle} ${widget.artist}', limit: 30);
+      }
+    } else if (widget.playlistId != null) {
       tracks = await yt.getPlaylistVideos(widget.playlistId!);
       if (tracks.isEmpty && widget.artist != null) {
         tracks = await yt.searchAudio('${widget.albumTitle} ${widget.artist}', limit: 30);

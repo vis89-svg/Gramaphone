@@ -3,6 +3,15 @@ import 'package:http/http.dart' as http;
 import 'package:youtube_explode_dart/youtube_explode_dart.dart';
 import '../models/track.dart';
 
+class AlbumInfo {
+  final String browseId;
+  final String title;
+  final String artist;
+  final String artworkUrl;
+  final String? playlistId;
+  AlbumInfo({required this.browseId, required this.title, required this.artist, this.artworkUrl = '', this.playlistId});
+}
+
 class InnerTubeService {
   static const _musicBase = 'https://music.youtube.com/youtubei/v1';
   static const _webKey = 'AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8';
@@ -194,6 +203,311 @@ class InnerTubeService {
   Future<String?> getAudioStreamUrl(String videoId) async {
     var info = await getBestAudioStream(videoId);
     return info?.url.toString();
+  }
+
+  // ── Album features ──────────────────────────────────────────
+
+  static const _albumParams = 'EgWKAQIYAWoMEA4QChADEAQQCRAF';
+
+  Future<List<AlbumInfo>> searchAlbums(String query, {int limit = 6}) async {
+    try {
+      var albums = await _searchAlbumsFiltered(query, limit: limit);
+      if (albums.isNotEmpty) return albums;
+      return await _searchAlbumsGeneral(query, limit: limit);
+    } catch (_) {
+      return [];
+    }
+  }
+
+  Future<List<AlbumInfo>> _searchAlbumsFiltered(String query, {int limit = 6}) async {
+    var body = {
+      'context': {
+        'client': {
+          'clientName': 'WEB_REMIX',
+          'clientVersion': '1.20240101.00.00',
+          'hl': 'en',
+          'gl': 'US',
+        }
+      },
+      'query': query,
+      'params': _albumParams,
+    };
+    var r = await _http.post(
+      Uri.parse('$_musicBase/search?key=$_webKey'),
+      headers: {'Content-Type': 'application/json'},
+      body: json.encode(body),
+    );
+    if (r.statusCode != 200) return [];
+
+    var j = json.decode(r.body) as Map<String, dynamic>;
+    var tabs = j['contents']?['tabbedSearchResultsRenderer']
+        ?['tabs'] as List<dynamic>?;
+    if (tabs == null || tabs.isEmpty) return [];
+
+    var contents = tabs[0]?['tabRenderer']?['content']
+        ?['sectionListRenderer']?['contents'] as List<dynamic>?;
+    if (contents == null) return [];
+
+    List<AlbumInfo> albums = [];
+    for (var section in contents) {
+      if (albums.length >= limit) break;
+
+      // Parse top result (musicCardShelfRenderer) — often contains the exact album
+      var card = section['musicCardShelfRenderer'] as Map<String, dynamic>?;
+      if (card != null) {
+        var album = _parseCardAlbum(card);
+        if (album != null) albums.add(album);
+        continue;
+      }
+
+      // Parse shelf items (musicShelfRenderer)
+      var items = section['musicShelfRenderer']?['contents']
+          as List<dynamic>?;
+      if (items == null) continue;
+      for (var item in items) {
+        if (albums.length >= limit) break;
+        var album = _parseListItemAlbum(item);
+        if (album != null) albums.add(album);
+      }
+    }
+    return albums;
+  }
+
+  Future<List<AlbumInfo>> _searchAlbumsGeneral(String query, {int limit = 6}) async {
+    var body = {
+      'context': {
+        'client': {
+          'clientName': 'WEB_REMIX',
+          'clientVersion': '1.20240101.00.00',
+          'hl': 'en',
+          'gl': 'US',
+        }
+      },
+      'query': query,
+    };
+    var r = await _http.post(
+      Uri.parse('$_musicBase/search?key=$_webKey'),
+      headers: {'Content-Type': 'application/json'},
+      body: json.encode(body),
+    );
+    if (r.statusCode != 200) return [];
+
+    var j = json.decode(r.body) as Map<String, dynamic>;
+    var tabs = j['contents']?['tabbedSearchResultsRenderer']
+        ?['tabs'] as List<dynamic>?;
+    if (tabs == null || tabs.isEmpty) return [];
+
+    var contents = tabs[0]?['tabRenderer']?['content']
+        ?['sectionListRenderer']?['contents'] as List<dynamic>?;
+    if (contents == null) return [];
+
+    List<AlbumInfo> albums = [];
+    for (var section in contents) {
+      if (albums.length >= limit) break;
+
+      var card = section['musicCardShelfRenderer'] as Map<String, dynamic>?;
+      if (card != null) {
+        var album = _parseCardAlbum(card);
+        if (album != null) albums.add(album);
+        continue;
+      }
+
+      var items = section['musicShelfRenderer']?['contents']
+          as List<dynamic>?;
+      if (items == null) continue;
+      for (var item in items) {
+        if (albums.length >= limit) break;
+        var album = _parseListItemAlbum(item);
+        if (album != null) albums.add(album);
+      }
+    }
+    return albums;
+  }
+
+  AlbumInfo? _parseCardAlbum(Map<String, dynamic> card) {
+    try {
+      var ne = card['onTap'] as Map<String, dynamic>?;
+      var bid = ne?['browseEndpoint']?['browseId'] as String?;
+      var thumbPl = ne?['watchEndpoint']?['playlistId'] as String?;
+      // Accept MPREb_ (browse) or OLAK5uy_ (playlist)
+      if (bid == null || (!bid.startsWith('MPREb_') && !bid.startsWith('OLAK5uy_'))) {
+        if (thumbPl != null && thumbPl.startsWith('OLAK5uy_')) bid = thumbPl;
+        else return null;
+      }
+
+      var title = _runsText(card['title'] as Map<String, dynamic>?);
+      if (title.isEmpty) return null;
+
+      var runs = card['subtitle']?['runs'] as List<dynamic>?;
+      var artist = '';
+      if (runs != null) {
+        artist = runs.map((r) => r['text'] as String? ?? '').join();
+        artist = artist.replaceAll(RegExp(r'\s*•\s*202\d.*$'), '').trim();
+      }
+
+      var thumbs = card['thumbnail']?['musicThumbnailRenderer']
+          ?['thumbnail']?['thumbnails'] as List<dynamic>?;
+      var art = (thumbs != null && thumbs.isNotEmpty)
+          ? thumbs.last['url'] as String? ?? ''
+          : '';
+
+      // Extract playlistId from button or onTap
+      var pl = thumbPl;
+      if (pl == null) {
+        var btn = card['buttons']?[0]?['buttonRenderer']?['command'] as Map<String, dynamic>?;
+        pl = btn?['watchEndpoint']?['playlistId'] as String?;
+      }
+
+      return AlbumInfo(browseId: bid!, title: title, artist: artist, artworkUrl: art, playlistId: pl);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  AlbumInfo? _parseListItemAlbum(dynamic item) {
+    try {
+      var rir = item['musicResponsiveListItemRenderer'] as Map<String, dynamic>?;
+      if (rir == null) return null;
+
+      var ne = rir['navigationEndpoint'] as Map<String, dynamic>?;
+      var bid = ne?['browseEndpoint']?['browseId'] as String?;
+
+      // Extract playlistId from the play button
+      var pl = '';
+      var menu = rir['menu']?['menuRenderer']?['items'] as List<dynamic>?;
+      if (menu != null) {
+        for (var m in menu) {
+          var pb = m['menuNavigationItemRenderer']?['navigationEndpoint']
+              ?['watchEndpoint']?['playlistId'] as String?;
+          if (pb != null && pb.startsWith('OLAK5uy_')) { pl = pb; break; }
+        }
+      }
+      // Also check playButton
+      if (pl.isEmpty) {
+        pl = rir['playButton']?['playNavigationEndpoint']
+            ?['watchEndpoint']?['playlistId'] as String? ?? '';
+      }
+
+      // Accept MPREb_ (browse) or OLAK5uy_ (playlist)
+      if (bid == null || (!bid.startsWith('MPREb_') && !bid.startsWith('OLAK5uy_'))) {
+        if (pl.startsWith('OLAK5uy_')) bid = pl;
+        else return null;
+      }
+
+      var title = _runsText(rir['title'] as Map<String, dynamic>?);
+      if (title.isEmpty) return null;
+
+      var columns = rir['flexColumns'] as List<dynamic>?;
+      var subtitle = '';
+      var thumbs = rir['thumbnail']?['musicThumbnailRenderer']
+          ?['thumbnail']?['thumbnails'] as List<dynamic>?;
+      var art = (thumbs != null && thumbs.isNotEmpty)
+          ? thumbs.last['url'] as String? ?? ''
+          : '';
+
+      if (columns != null && columns.length > 1) {
+        var runs = columns[1]?['musicResponsiveListItemFlexColumnRenderer']
+            ?['text']?['runs'] as List<dynamic>?;
+        if (runs != null) {
+          subtitle = runs.map((r) => r['text'] as String? ?? '').join();
+        }
+      }
+
+      return AlbumInfo(
+        browseId: bid,
+        title: title,
+        artist: subtitle.replaceAll(RegExp(r'\s*•\s*202\d.*$'), '').trim(),
+        artworkUrl: art,
+        playlistId: pl.isNotEmpty ? pl : null,
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<List<Track>> getAlbumTracks(String browseId) async {
+    try {
+      // OLAK5uy_ IDs are playlist IDs; use playlist endpoint instead of browse
+      if (browseId.startsWith('OLAK5uy_')) {
+        return getPlaylistVideos(browseId);
+      }
+
+      var body = {
+        'context': {
+          'client': {
+            'clientName': 'WEB_REMIX',
+            'clientVersion': '1.20240101.00.00',
+            'hl': 'en',
+            'gl': 'US',
+          }
+        },
+        'browseId': browseId,
+      };
+      var r = await _http.post(
+        Uri.parse('$_musicBase/browse?key=$_webKey'),
+        headers: {'Content-Type': 'application/json'},
+        body: json.encode(body),
+      );
+      if (r.statusCode != 200) return [];
+
+      var j = json.decode(r.body) as Map<String, dynamic>;
+      var tabs = j['contents']?['singleColumnBrowseResultsRenderer']
+          ?['tabs'] as List<dynamic>?;
+      if (tabs == null || tabs.isEmpty) return [];
+
+      var contents = tabs[0]?['tabRenderer']?['content']
+          ?['sectionListRenderer']?['contents'] as List<dynamic>?;
+      if (contents == null) return [];
+
+      List<Track> tracks = [];
+      for (var section in contents) {
+        var items = section['musicShelfRenderer']?['contents']
+            as List<dynamic>?;
+        if (items == null) continue;
+        for (var item in items) {
+          var rir = item['musicResponsiveListItemRenderer'] as Map<String, dynamic>?;
+          if (rir == null) continue;
+
+          var vid = rir['playlistItemData']?['videoId'] as String?;
+          vid ??= rir['navigationEndpoint']?['watchEndpoint']?['videoId'] as String?;
+          if (vid == null || vid.isEmpty) continue;
+
+          var title = _runsText(rir['title'] as Map<String, dynamic>?);
+          if (title.isEmpty) continue;
+
+          var columns = rir['flexColumns'] as List<dynamic>?;
+          var artist = '';
+          if (columns != null && columns.length > 1) {
+            var runs = columns[1]?['musicResponsiveListItemFlexColumnRenderer']
+                ?['text']?['runs'] as List<dynamic>?;
+            if (runs != null) {
+              artist = runs.map((r) => r['text'] as String? ?? '').join();
+            }
+          }
+
+          var duration = _parseDuration(rir['fixedColumns']?[0]
+              ?['musicResponsiveListItemFixedColumnRenderer']?['text']);
+
+          var thumbs = rir['thumbnail']?['musicThumbnailRenderer']
+              ?['thumbnail']?['thumbnails'] as List<dynamic>?;
+          var art = (thumbs != null && thumbs.isNotEmpty)
+              ? thumbs.last['url'] as String? ?? ''
+              : '';
+
+          tracks.add(Track(
+            title: title,
+            artist: artist,
+            duration: duration,
+            artworkUrl: art,
+            youtubeId: vid,
+            collectionId: browseId,
+          ));
+        }
+      }
+      return tracks;
+    } catch (_) {
+      return [];
+    }
   }
 
   void clearCache() {

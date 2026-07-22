@@ -4,6 +4,7 @@ import '../providers/app_state.dart';
 import '../models/track.dart';
 import '../services/database_service.dart';
 import '../services/itunes_service.dart';
+import '../services/innertube_service.dart' show AlbumInfo;
 import 'artist_screen.dart';
 import 'album_screen.dart';
 import '../widgets/artwork.dart';
@@ -23,6 +24,7 @@ class _SearchScreenState extends State<SearchScreen> {
   List<Track> _songResults = [];
   List<Map<String, dynamic>> _artistResults = [];
   List<Map<String, dynamic>> _albumResults = [];
+  List<AlbumInfo> _ytAlbumResults = [];
   bool _loading = false;
   Set<String> _favArtists = {};
   Set<String> _affArtists = {};
@@ -50,6 +52,7 @@ class _SearchScreenState extends State<SearchScreen> {
     var artists = ItunesService.deduplicateArtists(
         await ItunesService.searchArtists(q.trim(), limit: 12));
     var albums = await ItunesService.searchAlbums(q.trim(), limit: 8);
+    var ytAlbums = await state.ytDlp.searchAlbums(q.trim(), limit: 6);
 
     songs.sort((a, b) {
       var sa = _personalScore(a);
@@ -61,6 +64,7 @@ class _SearchScreenState extends State<SearchScreen> {
       _songResults = songs;
       _artistResults = artists;
       _albumResults = albums;
+      _ytAlbumResults = ytAlbums;
       _loading = false;
     });
   }
@@ -75,7 +79,7 @@ class _SearchScreenState extends State<SearchScreen> {
   @override
   Widget build(BuildContext context) {
     var hasResults =
-        _songResults.isNotEmpty || _artistResults.isNotEmpty || _albumResults.isNotEmpty;
+        _songResults.isNotEmpty || _artistResults.isNotEmpty || _albumResults.isNotEmpty || _ytAlbumResults.isNotEmpty;
 
     return Scaffold(
       backgroundColor: Tmp3App.bg,
@@ -188,6 +192,18 @@ class _SearchScreenState extends State<SearchScreen> {
               scrollDirection: Axis.horizontal,
               itemCount: _albumResults.length,
               itemBuilder: (_, i) => _albumCard(_albumResults[i]),
+            ),
+          ),
+          const SizedBox(height: 16),
+        ],
+        if (_ytAlbumResults.isNotEmpty) ...[
+          _sectionHeader('YouTube Albums'),
+          SizedBox(
+            height: 160,
+            child: ListView.builder(
+              scrollDirection: Axis.horizontal,
+              itemCount: _ytAlbumResults.length,
+              itemBuilder: (_, i) => _ytAlbumCard(_ytAlbumResults[i]),
             ),
           ),
           const SizedBox(height: 16),
@@ -314,6 +330,51 @@ class _SearchScreenState extends State<SearchScreen> {
                 style: const TextStyle(
                     color: Tmp3App.txt, fontWeight: FontWeight.w600)),
             Text(artist,
+                style: const TextStyle(color: Tmp3App.txt3, fontSize: 10)),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _ytAlbumCard(AlbumInfo x) {
+    return GestureDetector(
+      onTap: () => Navigator.push(
+        context,
+        MaterialPageRoute(builder: (_) => AlbumScreen(
+          albumTitle: x.title,
+          artist: x.artist,
+          browseId: x.browseId,
+        ))),
+      child: Container(
+        width: 140,
+        margin: const EdgeInsets.only(right: 10),
+        decoration: BoxDecoration(
+          color: Tmp3App.card,
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Container(
+              width: 56,
+              height: 56,
+              decoration: BoxDecoration(
+                color: Tmp3App.elev,
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(8),
+                child: Artwork(x.artworkUrl, size: 56, borderRadius: 8),
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(x.title,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                    color: Tmp3App.txt, fontWeight: FontWeight.w600)),
+            Text(x.artist,
                 style: const TextStyle(color: Tmp3App.txt3, fontSize: 10)),
           ],
         ),

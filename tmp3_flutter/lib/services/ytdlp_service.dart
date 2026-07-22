@@ -52,4 +52,14 @@ class YtDlpService implements YtDlpInterface {
       return null;
     }
   }
+
+  @override
+  Future<List<AlbumInfo>> searchAlbums(String query, {int limit = 6}) async {
+    return _innerTube.searchAlbums(query, limit: limit);
+  }
+
+  @override
+  Future<List<Track>> getAlbumTracks(String browseId) async {
+    return _innerTube.getAlbumTracks(browseId);
+  }
 }
