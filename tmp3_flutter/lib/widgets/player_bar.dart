@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../models/track.dart';
 import '../providers/app_state.dart';
+import '../screens/mix_screen.dart';
 import '../app.dart';
 
 class PlayerBar extends StatefulWidget {
@@ -131,6 +132,18 @@ class _PlayerBarState extends State<PlayerBar> {
                       size: 18,
                     ),
                     onPressed: () => _showSleepTimerDialog(),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.radio_rounded,
+                        color: Tmp3App.txt3, size: 18),
+                    tooltip: 'Start Radio',
+                    onPressed: () => Navigator.push(
+                      context,
+                      MaterialPageRoute(builder: (_) => MixScreen(
+                        artist: track.artist,
+                        seedTrack: track,
+                      )),
+                    ),
                   ),
                 ],
               ),

@@ -141,7 +141,7 @@ class _HomeScreenState extends State<HomeScreen> {
               const SizedBox(height: 24),
             ],
             if (state.artistMixes.isNotEmpty) ...[
-              _sectionHeader('Artist Mixes'),
+              _sectionHeader('Artist Radio'),
               SizedBox(
                 height: 160,
                 child: ListView.builder(

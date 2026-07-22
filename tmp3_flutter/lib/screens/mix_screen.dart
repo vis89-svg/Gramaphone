@@ -3,22 +3,29 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../models/track.dart';
 import '../providers/app_state.dart';
+import '../services/database_service.dart';
+import '../services/recommendation_service.dart';
 import '../widgets/artwork.dart';
 import '../app.dart';
 
 class MixScreen extends StatefulWidget {
   final String artist;
   final List<String>? clusterArtists;
+  final Track? seedTrack;
 
-  const MixScreen({super.key, required this.artist, this.clusterArtists});
+  const MixScreen({super.key, required this.artist, this.clusterArtists, this.seedTrack});
+
+  bool get isRadio => clusterArtists == null;
 
   @override
   State<MixScreen> createState() => _MixScreenState();
 }
 
 class _MixScreenState extends State<MixScreen> {
-  List<Track>? _songs;
+  List<Track> _songs = [];
   bool _loading = true;
+  final Set<String> _sessionHidden = {};
+  bool _saved = false;
 
   @override
   void initState() {
@@ -26,10 +33,15 @@ class _MixScreenState extends State<MixScreen> {
     _load();
   }
 
+  String get _title => widget.isRadio ? '${widget.artist} Radio' : '${widget.artist} Mix';
+
   Future<void> _load() async {
     try {
-      var yt = context.read<AppState>().ytDlp;
+      var state = context.read<AppState>();
+      var yt = state.ytDlp;
+      var pid = state.profileId;
 
+      // For cluster mode (For You), keep existing behavior
       if (widget.clusterArtists != null && widget.clusterArtists!.length > 1) {
         List<Track> all = [];
         Set<String> seen = {};
@@ -41,7 +53,6 @@ class _MixScreenState extends State<MixScreen> {
             }
           }
         }
-        // Add discovery from first artist's related
         if (all.isNotEmpty) {
           var firstId = all.first.youtubeId;
           if (firstId != null && firstId.isNotEmpty) {
@@ -58,49 +69,132 @@ class _MixScreenState extends State<MixScreen> {
         return;
       }
 
-      var primary = await yt.searchAudio(widget.artist, limit: 25);
-      var primaryFiltered = primary.where((t) => t.duration > 30 && t.duration < 600).toList();
+      // ── Radio mode: 50-track buffer with drift ──────────────────────
+      var seedArtist = widget.artist;
 
-      // Get YouTube's own related tracks unique to this artist
-      List<Track> similar = [];
-      var firstId = primaryFiltered.isNotEmpty ? primaryFiltered.first.youtubeId : null;
-      if (firstId != null && firstId.isNotEmpty) {
-        var related = await yt.getRelated(firstId, limit: 25);
-        var seenKeys = primaryFiltered.map((t) => t.dbKey).toSet();
-        similar = related
-            .where((t) =>
-                !seenKeys.contains(t.dbKey) &&
-                t.duration > 30 && t.duration < 600)
-            .toList();
+      // Phase 1: tight — seed artist topic channel tracks
+      var primary = await yt.searchAudio(seedArtist, limit: 15);
+      var phase1 = primary.where((t) => t.duration > 30 && t.duration < 600).toList();
+      var rng = Random();
+      phase1.shuffle(rng);
+
+      var allTracks = <Track>[];
+      var seen = <String>{};
+      for (var t in phase1) {
+        if (allTracks.length >= 10) break;
+        if (seen.add(t.dbKey)) allTracks.add(t);
       }
 
-      // Interleave: 1 main artist : 3 similar (Spotify Daily Mix ratio)
-      var rng = Random();
-      similar.shuffle(rng);
-      List<Track> mix = [];
-      int p = 0, s = 0;
-      while (p < primaryFiltered.length && mix.length < 50) {
-        mix.add(primaryFiltered[p++]);
-        for (var i = 0; i < 3 && s < similar.length && mix.length < 50; i++) {
-          mix.add(similar[s++]);
+      // Get related from first video
+      List<Track> related = [];
+      if (phase1.isNotEmpty) {
+        var firstId = phase1.first.youtubeId ?? phase1.last.youtubeId;
+        if (firstId != null && firstId.isNotEmpty) {
+          var rel = await yt.getRelated(firstId, limit: 30);
+          related = rel.where((t) => t.duration > 30 && t.duration < 600 && seen.add(t.dbKey)).toList();
         }
       }
-      while (p < primaryFiltered.length && mix.length < 50) {
-        mix.add(primaryFiltered[p++]);
-      }
-      while (s < similar.length && mix.length < 50) {
-        mix.add(similar[s++]);
+
+      // Phase 2: interleave seed artist + related (tight but expanding)
+      int p = 0, r = 0;
+      while (allTracks.length < 25) {
+        if (p < phase1.length) {
+          if (seen.add(phase1[p].dbKey)) allTracks.add(phase1[p]);
+          p++;
+        }
+        for (var i = 0; i < 2 && r < related.length && allTracks.length < 25; i++, r++) {
+          if (seen.add(related[r].dbKey)) allTracks.add(related[r]);
+        }
+        if (p >= phase1.length && r >= related.length) break;
       }
 
-      if (mounted) setState(() { _songs = mix; _loading = false; });
+      // Phase 3: genre-similar artists from affinity (wider)
+      if (pid != null) {
+        var affs = await DatabaseService.getAffinities(pid, limit: 8);
+        var similarArtists = affs
+            .map((a) => a['artist_name'] as String)
+            .where((a) => a != seedArtist)
+            .toList();
+        similarArtists.shuffle(rng);
+        for (var a in similarArtists.take(4)) {
+          var results = await yt.searchAudio(a, limit: 5);
+          for (var t in results) {
+            if (t.duration > 30 && t.duration < 600 && seen.add(t.dbKey)) {
+              allTracks.add(t);
+              if (allTracks.length >= 45) break;
+            }
+          }
+          if (allTracks.length >= 45) break;
+        }
+      }
+
+      // Phase 4: fill up to 50 with remaining related + more primary
+      while (allTracks.length < 50) {
+        if (r < related.length) {
+          if (seen.add(related[r].dbKey)) allTracks.add(related[r]);
+          r++;
+        } else if (p < phase1.length) {
+          if (seen.add(phase1[p].dbKey)) allTracks.add(phase1[p]);
+          p++;
+        } else {
+          break;
+        }
+      }
+
+      allTracks.shuffle(rng);
+      if (mounted) setState(() { _songs = allTracks; _loading = false; });
     } catch (e) {
-      debugPrint('[MIX] error: $e');
+      debugPrint('[MIX] load error: $e');
       if (mounted) setState(() { _songs = []; _loading = false; });
+    }
+  }
+
+  Future<void> _saveAsPlaylist() async {
+    var pid = context.read<AppState>().profileId;
+    if (pid == null || _songs.isEmpty) return;
+    var plid = await DatabaseService.createPlaylist(pid, _title, 'radio');
+    for (var t in _songs) {
+      await DatabaseService.addPlaylistTrack(plid, t);
+    }
+    if (mounted) setState(() => _saved = true);
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Saved "${_title}" to your playlists',
+              style: const TextStyle(color: Tmp3App.txt)),
+          backgroundColor: Tmp3App.green,
+          duration: const Duration(seconds: 2),
+        ),
+      );
+    }
+  }
+
+  Future<void> _hideTrack(Track t) async {
+    var pid = context.read<AppState>().profileId;
+    if (pid != null) {
+      await RecommendationService.addNegativeFeedback(pid, 'radio', t.dbKey, t.title);
+    }
+    setState(() {
+      _sessionHidden.add(t.dbKey);
+      _songs.removeWhere((s) => s.dbKey == t.dbKey);
+    });
+  }
+
+  void _playAll(int startIndex) {
+    var state = context.read<AppState>();
+    var playable = _songs.where((t) => !_sessionHidden.contains(t.dbKey)).toList();
+    if (playable.isEmpty) return;
+    state.clearQueue();
+    var idx = startIndex.clamp(0, playable.length - 1);
+    state.playNow(playable[idx]);
+    for (var j = 0; j < playable.length; j++) {
+      if (j != idx) state.enqueue(playable[j]);
     }
   }
 
   @override
   Widget build(BuildContext context) {
+    var isRadio = widget.isRadio;
     return Scaffold(
       backgroundColor: Tmp3App.bg,
       body: CustomScrollView(
@@ -129,24 +223,46 @@ class _MixScreenState extends State<MixScreen> {
                           color: Tmp3App.elev,
                           borderRadius: BorderRadius.circular(20),
                         ),
-                        child: Icon(Icons.music_note, color: Tmp3App.green, size: 40),
+                        child: Icon(
+                          isRadio ? Icons.radio_rounded : Icons.music_note,
+                          color: Tmp3App.green, size: 40),
                       ),
                       const SizedBox(height: 12),
-                      Text('${widget.artist} Mix',
+                      Text(_title,
                           style: const TextStyle(
                               color: Tmp3App.txt,
                               fontSize: 22,
                               fontWeight: FontWeight.bold)),
-                      if (_songs != null)
-                        Text('${_songs!.length} songs',
+                      if (_songs.isNotEmpty)
+                        Text('${_songs.length} songs',
                             style: const TextStyle(color: Tmp3App.txt3, fontSize: 13)),
                     ],
                   ),
                 ),
               ),
             ),
-            title: Text('${widget.artist} Mix',
+            title: Text(_title,
                 style: const TextStyle(color: Tmp3App.txt, fontSize: 18)),
+            actions: [
+              if (isRadio && _songs.isNotEmpty)
+                IconButton(
+                  icon: Icon(
+                    _saved ? Icons.check : Icons.bookmark_border,
+                    color: _saved ? Tmp3App.green : Tmp3App.txt3,
+                  ),
+                  tooltip: 'Save Radio',
+                  onPressed: _saved ? null : _saveAsPlaylist,
+                ),
+              if (isRadio && _songs.isNotEmpty)
+                IconButton(
+                  icon: const Icon(Icons.refresh, color: Tmp3App.txt3),
+                  tooltip: 'Refresh Station',
+                  onPressed: () {
+                    setState(() { _songs = []; _loading = true; });
+                    _load();
+                  },
+                ),
+            ],
           ),
           SliverToBoxAdapter(
             child: _loading
@@ -154,7 +270,7 @@ class _MixScreenState extends State<MixScreen> {
                     height: 200,
                     child: Center(
                         child: CircularProgressIndicator(color: Tmp3App.green)))
-                : _songs == null || _songs!.isEmpty
+                : _songs.isEmpty
                     ? SizedBox(
                         height: 200,
                         child: Center(
@@ -168,6 +284,15 @@ class _MixScreenState extends State<MixScreen> {
   }
 
   Widget _buildList() {
+    var playable = _songs.where((t) => !_sessionHidden.contains(t.dbKey)).toList();
+    if (playable.isEmpty) {
+      return const Padding(
+        padding: EdgeInsets.all(32),
+        child: Text('All tracks hidden. Refresh to get new ones.',
+            textAlign: TextAlign.center,
+            style: TextStyle(color: Tmp3App.txt3, fontSize: 14)),
+      );
+    }
     return Column(
       children: [
         Padding(
@@ -177,7 +302,7 @@ class _MixScreenState extends State<MixScreen> {
             child: ElevatedButton.icon(
               onPressed: () => _playAll(0),
               icon: const Icon(Icons.play_arrow_rounded),
-              label: const Text('Play All'),
+              label: Text(widget.isRadio ? 'Start Radio' : 'Play All'),
               style: ElevatedButton.styleFrom(
                 backgroundColor: Tmp3App.green,
                 foregroundColor: Tmp3App.bg,
@@ -188,47 +313,66 @@ class _MixScreenState extends State<MixScreen> {
             ),
           ),
         ),
-        ...List.generate(_songs!.length, (i) {
-          var t = _songs![i];
-          var isPrimary = _songs!.take(i + 1).where((x) => x.dbKey == t.dbKey).length.isOdd;
-          return ListTile(
-            leading: Artwork(t.effectiveArtworkUrl, size: 36, borderRadius: 8),
-            title: Text(t.title,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                    color: Tmp3App.txt,
-                    fontWeight: isPrimary ? FontWeight.w600 : FontWeight.w400,
-                    fontSize: 14)),
-            subtitle: Row(
+        if (widget.isRadio)
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+            child: Row(
               children: [
-                Text(t.artist,
-                    style: TextStyle(
-                        color: isPrimary ? Tmp3App.green : Tmp3App.txt3,
-                        fontSize: 11)),
-                if (t.duration > 0)
-                  Text(' · ${t.durationDisplay}',
-                      style: const TextStyle(color: Tmp3App.txt3, fontSize: 11)),
+                Icon(Icons.autorenew, color: Tmp3App.txt3, size: 14),
+                const SizedBox(width: 6),
+                const Expanded(
+                  child: Text('Infinite — new tracks added as you listen',
+                      style: TextStyle(color: Tmp3App.txt3, fontSize: 11)),
+                ),
               ],
             ),
-            trailing: IconButton(
-              icon: const Icon(Icons.play_circle_outline,
-                  color: Tmp3App.green, size: 24),
-              onPressed: () => _playAll(i),
-            ),
-            onTap: () => _playAll(i),
-          );
-        }),
+          ),
+        for (var i = 0; i < _songs.length; i++)
+          if (!_sessionHidden.contains(_songs[i].dbKey))
+            _trackTile(i),
       ],
     );
   }
 
-  void _playAll(int startIndex) {
-    var state = context.read<AppState>();
-    state.clearQueue();
-    state.playNow(_songs![startIndex]);
-    for (var j = 0; j < _songs!.length; j++) {
-      if (j != startIndex) state.enqueue(_songs![j]);
-    }
+  Widget _trackTile(int i) {
+    var t = _songs[i];
+    var displayArtist = t.artist.isNotEmpty ? t.artist : 'Unknown';
+    return ListTile(
+      leading: Artwork(t.effectiveArtworkUrl, size: 36, borderRadius: 8),
+      title: Text(t.title,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: const TextStyle(
+              color: Tmp3App.txt,
+              fontWeight: FontWeight.w400,
+              fontSize: 14)),
+      subtitle: Row(
+        children: [
+          Text(displayArtist,
+              style: const TextStyle(color: Tmp3App.txt3, fontSize: 11)),
+          if (t.duration > 0)
+            Text(' · ${t.durationDisplay}',
+                style: const TextStyle(color: Tmp3App.txt3, fontSize: 11)),
+        ],
+      ),
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (widget.isRadio)
+            IconButton(
+              icon: const Icon(Icons.do_not_disturb_alt_outlined,
+                  color: Tmp3App.txt3, size: 18),
+              tooltip: 'Not interested',
+              onPressed: () => _hideTrack(t),
+            ),
+          IconButton(
+            icon: const Icon(Icons.play_circle_outline,
+                color: Tmp3App.green, size: 24),
+            onPressed: () => _playAll(i),
+          ),
+        ],
+      ),
+      onTap: () => _playAll(i),
+    );
   }
 }

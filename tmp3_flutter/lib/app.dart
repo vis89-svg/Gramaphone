@@ -5,6 +5,7 @@ import 'providers/app_state.dart';
 import 'screens/home_screen.dart';
 import 'screens/search_screen.dart';
 import 'screens/queue_screen.dart';
+import 'screens/stats_screen.dart';
 import 'screens/onboarding_screen.dart';
 import 'widgets/player_bar.dart';
 
@@ -100,6 +101,7 @@ class _MainShellState extends State<MainShell> {
                 HomeScreen(),
                 SearchScreen(),
                 QueueScreen(),
+                StatsScreen(),
               ],
             ),
           ),
@@ -119,6 +121,7 @@ class _MainShellState extends State<MainShell> {
           _navItem(0, Icons.home_rounded, 'Home'),
           _navItem(1, Icons.search_rounded, 'Search'),
           _navItem(2, Icons.queue_music_rounded, 'Queue'),
+          _navItem(3, Icons.bar_chart_rounded, 'Stats'),
         ],
       ),
     );

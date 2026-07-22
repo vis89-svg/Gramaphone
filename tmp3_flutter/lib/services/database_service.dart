@@ -353,6 +353,50 @@ class DatabaseService {
     ''', [pid, limit]);
   }
 
+  // ── Stats methods ──────────────────────────────────────────────
+  static Future<double> totalListeningTime(int pid) async {
+    final d = await db;
+    var r = await d.rawQuery(
+        'SELECT COALESCE(SUM(play_duration), 0) as total FROM listening_history WHERE profile_id = ?', [pid]);
+    return (r.first['total'] as num).toDouble();
+  }
+
+  static Future<double> listeningTimeSince(int pid, String since) async {
+    final d = await db;
+    var r = await d.rawQuery(
+      'SELECT COALESCE(SUM(play_duration), 0) as total FROM listening_history WHERE profile_id = ? AND played_at >= ?',
+      [pid, since]);
+    return (r.first['total'] as num).toDouble();
+  }
+
+  static Future<List<Map<String, dynamic>>> topArtists(int pid, {int limit = 10}) async {
+    final d = await db;
+    return await d.rawQuery('''
+      SELECT artist, COUNT(*) as play_count, COALESCE(SUM(play_duration), 0) as total_duration
+      FROM listening_history WHERE profile_id = ?
+      GROUP BY artist ORDER BY play_count DESC LIMIT ?
+    ''', [pid, limit]);
+  }
+
+  static Future<List<Map<String, dynamic>>> topTracks(int pid, {int limit = 10}) async {
+    final d = await db;
+    return await d.rawQuery('''
+      SELECT title, artist, artwork_url, COUNT(*) as play_count
+      FROM listening_history WHERE profile_id = ?
+      GROUP BY title, artist ORDER BY play_count DESC LIMIT ?
+    ''', [pid, limit]);
+  }
+
+  static Future<List<Map<String, dynamic>>> dailyPlays(int pid, {int days = 7}) async {
+    final d = await db;
+    return await d.rawQuery('''
+      SELECT DATE(played_at) as day, COUNT(*) as plays, COALESCE(SUM(play_duration), 0) as duration
+      FROM listening_history
+      WHERE profile_id = ? AND played_at >= datetime('now', '-$days days')
+      GROUP BY DATE(played_at) ORDER BY day ASC
+    ''', [pid]);
+  }
+
   static Future<List<Map<String, dynamic>>> getRecentlyPlayedTracks(int pid,
       {int limit = 10}) async {
     final d = await db;
